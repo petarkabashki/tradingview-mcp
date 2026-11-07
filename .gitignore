@@ -5,3 +5,18 @@ temp_*
 *.log
 discovery-log.json
 rules.json
+
+# Worktree symlink (node_modules/ above only matches directories)
+/node_modules
+
+# Personal trade data and sync output, never commit
+ingest/
+t212-plan.json
+.t212-tv-state.json
+tradingview-notes.md
+symbol-map.toml
+
+# Python tooling
+.venv/
+__pycache__/
+.pytest_cache/

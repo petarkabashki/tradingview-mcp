@@ -169,6 +169,48 @@ export async function layoutSwitch({ name }) {
   return { success: true, layout: result.name || name, layout_id: result.id, source: result.source, action: 'switched', unsaved_dialog_dismissed: dismissed };
 }
 
+/**
+ * Identify the layout open in the attached tab. Write paths use this as a
+ * guard, so an unknown value is reported as null rather than guessed.
+ */
+export async function layoutCurrent() {
+  const info = await evaluate(`
+    (function() {
+      var api = window.TradingViewApi;
+      var out = { name: null, id: null, url: location.pathname };
+      try { if (typeof api.layoutName === 'function') out.name = api.layoutName(); } catch (e) {}
+      try { if (typeof api.layoutId === 'function') out.id = api.layoutId(); } catch (e) {}
+      return out;
+    })()
+  `);
+  return { success: true, name: info?.name ?? null, id: info?.id ?? null, url: info?.url ?? null };
+}
+
+/**
+ * Save the layout open in the attached tab. Uses the app's own save call when
+ * this build exposes it, otherwise the Ctrl+S shortcut. Neither proves the
+ * layout persisted: confirm by reloading (portfolio_verify with reload).
+ */
+export async function layoutSave() {
+  const saved = await evaluateAsync(`
+    new Promise(function(resolve) {
+      var api = window.TradingViewApi;
+      if (typeof api.saveChartToServer !== 'function') { resolve({ method: null }); return; }
+      var done = function(ok) { resolve({ method: 'saveChartToServer', ok: ok }); };
+      try { api.saveChartToServer(function() { done(true); }, function() { done(false); }); }
+      catch (e) { resolve({ method: null, error: e.message }); return; }
+      setTimeout(function() { resolve({ method: 'saveChartToServer', ok: null }); }, 5000);
+    })
+  `);
+  if (saved?.method) {
+    if (saved.ok === false) throw new Error('TradingView reported that saving the layout failed.');
+    return { success: true, method: saved.method, confirmed: saved.ok === true, layout: await layoutCurrent() };
+  }
+  await keyboard({ key: 's', modifiers: ['ctrl'] });
+  await new Promise(r => setTimeout(r, 1500));
+  return { success: true, method: 'ctrl+s', confirmed: false, layout: await layoutCurrent() };
+}
+
 export async function keyboard({ key, modifiers }) {
   const c = await getClient();
   let mod = 0;

@@ -32,7 +32,20 @@ export async function list() {
       is_chart: /tradingview\.com\/chart/i.test(t.url),
     }));
 
-  return { success: true, tab_count: tabs.length, tabs };
+  return { success: true, tab_count: tabs.length, tabs, shell_tabs: await readShellTabs() };
+}
+
+/** Tabs as the tab bar shows them, which can differ from the CDP targets. */
+async function readShellTabs() {
+  try {
+    return await withShell((evalIn) => evalIn(`
+      Array.from(document.querySelectorAll('.tabs-container .tab')).map(function(t) {
+        return { title: (t.textContent || '').trim(), active: t.classList.contains('active') };
+      })
+    `));
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -120,7 +133,11 @@ export async function newTab({ layout, name } = {}) {
       const before = await evalIn(`document.querySelectorAll('.tabs-container .tab').length`);
       const clicked = await evalIn(`
         (function() {
-          var btn = document.querySelector('[class*="create-new-tab"]');
+          // As with the close button, the wrapper can have no handler: the
+          // real clickable is the button inside it.
+          var btn = document.querySelector('[class*="create-new-tab"] button')
+            || document.querySelector('button[class*="create-new-tab"]')
+            || document.querySelector('[class*="create-new-tab"]');
           if (!btn) return false;
           btn.click();
           return true;
@@ -131,7 +148,13 @@ export async function newTab({ layout, name } = {}) {
       const after = await evalIn(`document.querySelectorAll('.tabs-container .tab').length`);
       return { before, after };
     });
-    landing = await findLandingTarget();
+    if (shellCounts.after <= shellCounts.before) {
+      throw new Error('Clicked the new-tab button but no tab opened.');
+    }
+    for (let i = 0; i < 12 && !landing; i++) {
+      landing = await findLandingTarget();
+      if (!landing) await new Promise(r => setTimeout(r, 500));
+    }
   }
 
   if (!layout) {
@@ -197,15 +220,17 @@ export async function newTab({ layout, name } = {}) {
     const clickByTitle = `
       (function() {
         var q = ${JSON.stringify(String(layout).toLowerCase())};
-        var items = document.querySelectorAll('.layout-list-item');
-        for (var i = 0; i < items.length; i++) {
-          var t = items[i].querySelector('.layout-list-item-title');
-          if (t && t.textContent.trim().toLowerCase().indexOf(q) !== -1) {
-            items[i].click();
-            return t.textContent.trim();
-          }
-        }
-        return null;
+        var items = Array.from(document.querySelectorAll('.layout-list-item'));
+        var title = function(item) {
+          var t = item.querySelector('.layout-list-item-title');
+          return t ? t.textContent.trim() : '';
+        };
+        // An exact title wins, so "Main" never opens "Main 2".
+        var hit = items.find(function(item) { return title(item).toLowerCase() === q; })
+          || items.find(function(item) { return title(item).toLowerCase().indexOf(q) !== -1; });
+        if (!hit) return null;
+        hit.click();
+        return title(hit);
       })()
     `;
     let foundTitle = await evalIn(clickByTitle);
