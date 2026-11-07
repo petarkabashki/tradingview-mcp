@@ -1,6 +1,6 @@
 # TradingView MCP — Claude Instructions
 
-92 tools for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
+93 tools for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
 
 ## Decision Tree — Which Tool When
 
@@ -73,6 +73,7 @@ Follow `skills/t212-portfolio-sync/SKILL.md`. From Trading 212 CSVs, `t212-tv` i
 - `portfolio_apply` → syncs the plan's watchlists, paged layout and entry lines in one attached session
 - `portfolio_page` → flips the layout to a page or feed (`next`, `prev`, a number; `feed: "boats"` for out-of-hours prices)
 - `portfolio_verify` → compares TradingView with the plan, without writing
+- `portfolio_pnl` → unrealized P&L per asset: amount, percent, weight and contribution as percent of the portfolio, plus totals. Uses scanner prices, so it needs no chart (`feed: "perp"` for out-of-hours, `base: "GBP"` to total in another currency)
 
 ### "Manage watchlists and layouts"
 - `watchlist_list` → all lists with ids and symbols

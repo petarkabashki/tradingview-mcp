@@ -7,9 +7,11 @@ import subprocess
 import sys
 import urllib.error
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from t212_tv.feeds import USABLE, add_feed, load_feeds, pin_symbol, plan_feeds, remove_feed, resolve_feed, resolve_ticker
+from t212_tv import pnl
+from t212_tv.feeds import USABLE, add_feed, load_feeds, pin_symbol, plan_feeds, remove_feed, resolve_feed, resolve_ticker, scan
 from t212_tv.notes import render, write_notes
 from t212_tv.parser import ExportError, read_exports
 from t212_tv.plan import DEFAULT_LAYOUT, DEFAULT_PAGE_SIZE, DEFAULT_WATCHLIST, build_plan, plan_pages
@@ -20,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 STATE_FILE = ".t212-tv-state.json"
 PLAN_FILE = "t212-plan.json"
 NOTES_FILE = "tradingview-notes.md"
+PNL_FILE = "t212-pnl.json"
 OVERRIDES_FILE = "symbol-map.toml"
 FEEDS_FILE = "feeds.toml"
 # Reading every page after a reload is slow, so this outlasts a large portfolio.
@@ -136,6 +139,67 @@ def cmd_positions(args) -> int:
         print(f"{p.ticker:8} {p.shares:>16} @ {p.entry_price} {p.currency}  ({p.trade_count} trades)")
     print(f"{len(positions)} open, {len(closed)} closed, from {len(sources)} export(s)")
     return 0
+
+
+def parse_prices(pairs: list[str]) -> dict[str, Decimal]:
+    prices = {}
+    for pair in pairs:
+        ticker, _, price = pair.partition("=")
+        try:
+            prices[ticker.strip()] = Decimal(price)
+        except InvalidOperation as err:
+            raise ValueError(f"--price takes TICKER=PRICE, got: {pair}") from err
+    return prices
+
+
+def fx_rate(src: str, dst: str):
+    return scan(f"FX_IDC:{src}{dst}").get("close")
+
+
+def pnl_symbols(args, state: dict, positions) -> dict[str, list[str]]:
+    """Symbols to price each ticker from: the feed's, if asked for, then the primary listing."""
+    feed_rows = {}
+    if args.feed and args.feed != "primary":
+        if args.feed not in load_feeds(args.ingest / FEEDS_FILE):
+            raise ValueError(f"No feed named {args.feed}")
+        feed_rows = state.get("feeds", {}).get(args.feed, {}).get("rows", {})
+    symbols = {}
+    for p in positions:
+        row = feed_rows.get(p.ticker, {})
+        feed_symbol = row.get("symbol") if row.get("status") in USABLE else None
+        symbols[p.ticker] = [s for s in (feed_symbol, state["symbols"][p.isin or p.ticker]) if s]
+    return symbols
+
+
+def cmd_pnl(args) -> int:
+    state = load_state(args.ingest)
+    positions, _, _ = load_positions(args.ingest)
+    known = state.get("symbols", {})
+    if any((p.isin or p.ticker) not in known for p in positions):
+        # Only unknown tickers are searched, which needs TradingView running.
+        state["symbols"] = resolve_all(positions, search, load_overrides(args.ingest / OVERRIDES_FILE), known)
+        save_state(args.ingest, state)
+    result = pnl.compute(
+        positions,
+        pnl_symbols(args, state, positions),
+        scan,
+        fx_rate,
+        base=args.base,
+        overrides=parse_prices(args.price),
+    )
+    result["as_of"] = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    result["feed"] = args.feed or "primary"
+    payload = pnl.to_json(result)
+    if args.save:
+        (args.ingest / PNL_FILE).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"Unrealized P&L at {result['as_of']}, prices from {result['feed']}")
+        print(pnl.render_table(result))
+        if args.save:
+            print(f"Saved to {args.ingest / PNL_FILE}")
+    return 2 if result["missing"] else 0
 
 
 def print_pages(plan: dict) -> None:
@@ -354,6 +418,13 @@ def build_parser() -> argparse.ArgumentParser:
     page.add_argument("page", nargs="?", default="current", help="next, prev, current or a page number")
     page.add_argument("--feed", help="A feed name, or primary; keeps the feed showing when left out")
     page.set_defaults(run=cmd_page)
+    report = commands.add_parser("pnl", help="Unrealized P&L per asset: amount, percent and share of portfolio")
+    report.add_argument("--feed", help="Price from a feed, such as perp, falling back to the primary listing")
+    report.add_argument("--base", help="Currency for totals and weights (default: the positions' currency, or USD if mixed)")
+    report.add_argument("--price", action="append", default=[], metavar="TICKER=PRICE", help="Use this price instead of the scanner's; repeatable")
+    report.add_argument("--json", action="store_true", help="Print JSON instead of a table")
+    report.add_argument("--save", action="store_true", help=f"Also write {PNL_FILE} into the ingest folder")
+    report.set_defaults(run=cmd_pnl)
     add_feed_commands(commands)
     return parser
 
@@ -366,6 +437,9 @@ def main() -> int:
     args.ingest = Path(args.ingest)
     try:
         return args.run(args)
+    except urllib.error.URLError as err:
+        print(f"error: price lookup failed: {err.reason}", file=sys.stderr)
+        return 1
     except (ExportError, UnresolvedSymbols, ValueError, RuntimeError) as err:
         print(f"error: {err}", file=sys.stderr)
         return 1
