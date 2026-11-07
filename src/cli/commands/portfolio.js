@@ -10,7 +10,7 @@ register('portfolio', {
   description: 'Position plans (apply, page, verify)',
   subcommands: new Map([
     ['apply', {
-      description: 'Sync the plan\'s watchlists and paged layout, and draw its entry lines',
+      description: 'Sync the plan\'s watchlists, paged layout and entry-line indicator',
       options: { plan: { type: 'string', short: 'p', description: 'Plan JSON file' } },
       handler: (opts) => core.apply({ plan_path: requirePlan(opts, 'apply') }),
     }],

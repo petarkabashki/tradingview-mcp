@@ -4,6 +4,42 @@
  * They throw on error (callers catch and format).
  */
 import { evaluate, evaluateAsync, getClient } from '../connection.js';
+import { click, hover, keyboard, mouseClick } from './ui.js';
+
+const UNTITLED = 'Untitled script';
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+const EDITOR_TITLE = `
+  (function() {
+    var el = document.querySelector('.monaco-editor.pine-editor-monaco');
+    for (; el; el = el.parentElement) {
+      var title = el.querySelector('h2');
+      if (title) return title.textContent.trim();
+    }
+    return null;
+  })()
+`;
+
+const SAVE_DIALOG = `
+  (function() {
+    function visible(text) {
+      return Array.prototype.filter.call(document.querySelectorAll('button'), function(b) {
+        return b.textContent.trim() === text && b.offsetParent !== null;
+      });
+    }
+    var cancels = visible('Cancel');
+    var saves = visible('Save');
+    for (var i = 0; i < saves.length; i++) {
+      var box = saves[i].parentElement;
+      for (var depth = 0; box && depth < 6; depth++, box = box.parentElement) {
+        for (var j = 0; j < cancels.length; j++) {
+          if (box.contains(cancels[j])) return { save: saves[i], cancel: cancels[j], input: box.querySelector('input') };
+        }
+      }
+    }
+    return null;
+  })()
+`;
 
 // ── Monaco finder (injected into TV page) ──
 const FIND_MONACO = `
@@ -344,36 +380,235 @@ export async function getErrors() {
   };
 }
 
-export async function save() {
+export async function save({ name } = {}) {
   const editorReady = await ensurePineEditorOpen();
   if (!editorReady) throw new Error('Could not open Pine Editor.');
 
+  await evaluate(`(function() { var m = ${FIND_MONACO}; if (m) m.editor.focus(); })()`);
   const c = await getClient();
   await c.Input.dispatchKeyEvent({ type: 'keyDown', modifiers: 2, key: 's', code: 'KeyS', windowsVirtualKeyCode: 83 });
   await c.Input.dispatchKeyEvent({ type: 'keyUp', key: 's', code: 'KeyS' });
-  await new Promise(r => setTimeout(r, 800));
 
-  // Handle "Save Script" name dialog that appears for new/unsaved scripts
-  const dialogHandled = await evaluate(`
+  // A new script gets a name dialog, a saved one does not. Only the dialog has a
+  // Cancel beside its Save: the editor's own Save button sits under a container
+  // with a dialog-like class too, so matching on the class clicks the wrong one.
+  const deadline = Date.now() + 3000;
+  let named = null;
+  while (Date.now() < deadline && named === null) {
+    await sleep(200);
+    named = await evaluate(`(function() { var d = ${SAVE_DIALOG}; return d ? { name: d.input ? d.input.value : null } : null; })()`);
+  }
+  if (named === null) return { success: true, action: 'Ctrl+S_dispatched' };
+
+  if (name && named.name !== name) {
+    await evaluate(`(function() { var d = ${SAVE_DIALOG}; if (d) d.cancel.click(); })()`);
+    throw new Error(`Save dialog offered "${named.name}", expected "${name}". Nothing was saved.`);
+  }
+  await evaluate(`(function() { var d = ${SAVE_DIALOG}; if (d) d.save.click(); })()`);
+
+  const gone = Date.now() + 3000;
+  while (Date.now() < gone) {
+    await sleep(200);
+    if (await evaluate(`${SAVE_DIALOG} === null`)) return { success: true, action: 'saved_with_dialog', name: named.name };
+  }
+  return { success: false, action: 'save_dialog_still_open', name: named.name };
+}
+
+const normalise = source => source.replace(/\r\n/g, '\n').trimEnd();
+
+async function editorVisible() {
+  return evaluate(`
     (function() {
-      var saveBtn = null;
-      var btns = document.querySelectorAll('button');
-      for (var i = 0; i < btns.length; i++) {
-        var text = btns[i].textContent.trim();
-        if (text === 'Save' && btns[i].offsetParent !== null) {
-          // Check if it's in a dialog (not the Pine Editor save button)
-          var parent = btns[i].closest('[class*="dialog"], [class*="modal"], [class*="popup"], [role="dialog"]');
-          if (parent) { saveBtn = btns[i]; break; }
-        }
-      }
-      if (saveBtn) { saveBtn.click(); return true; }
-      return false;
+      var el = document.querySelector('.monaco-editor.pine-editor-monaco');
+      return !!el && el.offsetParent !== null && ${FIND_MONACO} !== null;
     })()
   `);
+}
 
-  if (dialogHandled) await new Promise(r => setTimeout(r, 500));
+/** Monaco can stay mounted after the panel closes, so this checks it can be seen. */
+async function showEditor() {
+  if (await editorVisible()) return false;
+  await click({ by: 'data-name', value: 'pine-dialog-button' });
+  for (let i = 0; i < 50; i += 1) {
+    await sleep(200);
+    if (await editorVisible()) return true;
+  }
+  throw new Error('Pine Editor did not open.');
+}
 
-  return { success: true, action: dialogHandled ? 'saved_with_dialog' : 'Ctrl+S_dispatched' };
+async function hideEditor() {
+  await evaluate(`
+    (function() {
+      var el = document.querySelector('.monaco-editor.pine-editor-monaco');
+      for (; el; el = el.parentElement) {
+        var close = el.querySelector('button[aria-label="Close"]');
+        if (close) { close.click(); return; }
+      }
+    })()
+  `);
+}
+
+/**
+ * The script the editor is bound to. The setSource, newScript and openScript
+ * calls only replace the text, so Ctrl+S after them overwrites this script.
+ */
+export async function editorTitle() {
+  return evaluate(EDITOR_TITLE);
+}
+
+/** A fresh editor says "Untitled script" for some seconds, then loads the last script. */
+async function settledTitle() {
+  const deadline = Date.now() + 8000;
+  let title = await editorTitle();
+  while (Date.now() < deadline) {
+    await sleep(500);
+    const next = await editorTitle();
+    if (next && next === title && next !== UNTITLED) return next;
+    title = next;
+  }
+  return title;
+}
+
+async function waitForTitle(want) {
+  const deadline = Date.now() + 10000;
+  let title = null;
+  while (Date.now() < deadline) {
+    title = await editorTitle();
+    if (title === want) return;
+    await sleep(250);
+  }
+  throw new Error(`Pine Editor stayed on "${title}", expected "${want}". Nothing was saved.`);
+}
+
+async function savedSource(name) {
+  const found = await evaluateAsync(`
+    fetch('https://pine-facade.tradingview.com/pine-facade/list/?filter=saved', { credentials: 'include' })
+      .then(function(r) { return r.json(); })
+      .then(function(scripts) {
+        var want = ${JSON.stringify(name)};
+        var match = (Array.isArray(scripts) ? scripts : []).filter(function(s) {
+          return s.scriptName === want || s.scriptTitle === want;
+        })[0];
+        if (!match) return { exists: false };
+        return fetch('https://pine-facade.tradingview.com/pine-facade/get/' + match.scriptIdPart + '/' + (match.version || 1), { credentials: 'include' })
+          .then(function(r) { return r.json(); })
+          .then(function(data) { return { exists: true, source: data.source || '' }; });
+      })
+  `);
+  return found?.exists ? found.source : null;
+}
+
+/** Leaving a script with unsaved edits would lose them, or stop on a prompt. */
+async function assertSafeToLeave(title) {
+  const { source } = await getSource();
+  if (title === UNTITLED) {
+    if (source.trim() === '' || source.includes('indicator("My script")')) return;
+    throw new Error('The Pine Editor holds an unsaved script. Save or discard it, then run this again.');
+  }
+  const saved = await savedSource(title);
+  if (saved === null || normalise(saved) !== normalise(source)) {
+    throw new Error(`The Pine Editor has unsaved changes in "${title}". Save or discard them, then run this again.`);
+  }
+}
+
+async function openTitleMenu() {
+  const box = await evaluate(`
+    (function() {
+      var el = document.querySelector('.monaco-editor.pine-editor-monaco');
+      for (; el; el = el.parentElement) {
+        var title = el.querySelector('h2');
+        if (title) { var r = title.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }
+      }
+      return null;
+    })()
+  `);
+  if (!box) throw new Error('Pine Editor title not found.');
+  await mouseClick({ x: box.x, y: box.y });
+  await sleep(400);
+}
+
+/** Opens a saved script by its exact name, which binds the editor to it. */
+async function bindEditorTo(name) {
+  await openTitleMenu();
+  await click({ by: 'aria-label', value: 'Open script…' });
+
+  const dialog = '[data-name="open-user-script-dialog"]';
+  const item = `
+    (function() {
+      var items = document.querySelectorAll('${dialog} [data-name="open-script-dialog-item-name"]');
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].textContent.trim() === ${JSON.stringify(name)}) {
+          items[i].scrollIntoView({ block: 'center' });
+          var r = items[i].getBoundingClientRect();
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        }
+      }
+      return null;
+    })()
+  `;
+  const deadline = Date.now() + 5000;
+  let box = null;
+  while (Date.now() < deadline && !box) {
+    await sleep(250);
+    box = await evaluate(item);
+  }
+  if (!box) {
+    await keyboard({ key: 'Escape' });
+    throw new Error(`"${name}" was not listed in the Open script dialog. Nothing was saved.`);
+  }
+  await mouseClick({ x: box.x, y: box.y });
+  await waitForTitle(name);
+}
+
+/** The real new-script path: it unbinds the editor from whatever it had open. */
+async function bindEditorToNew() {
+  await openTitleMenu();
+  await hover({ by: 'text', value: 'Create new' });
+  await sleep(400);
+  await click({ by: 'aria-label', value: 'Indicator' });
+  await waitForTitle(UNTITLED);
+}
+
+/**
+ * Save `source` as the personal script `name`, and nothing else. It stops, with
+ * nothing saved, if the editor holds unsaved work or is bound to another script
+ * at the moment of saving.
+ */
+export async function saveNamed({ name, source }) {
+  const saved = await savedSource(name);
+  if (saved !== null && normalise(saved) === normalise(source)) return { success: true, name, action: 'unchanged' };
+
+  const opened = await showEditor();
+  try {
+    const title = await settledTitle();
+    if (title !== name) {
+      await assertSafeToLeave(title);
+      if (saved === null) await bindEditorToNew();
+      else await bindEditorTo(name);
+    }
+
+    await setSource({ source });
+    const bound = await editorTitle();
+    if (bound !== (saved === null ? UNTITLED : name)) {
+      throw new Error(`Pine Editor moved to "${bound}". Nothing was saved.`);
+    }
+
+    const result = await save({ name });
+    if (!result.success) throw new Error(`Saving "${name}" did not finish: ${result.action}.`);
+    await waitForTitle(name);
+
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      const now = await savedSource(name);
+      if (now !== null && normalise(now) === normalise(source)) {
+        return { success: true, name, action: saved === null ? 'created' : 'updated' };
+      }
+      await sleep(500);
+    }
+    throw new Error(`"${name}" did not reach TradingView with the new source.`);
+  } finally {
+    if (opened) await hideEditor();
+  }
 }
 
 export async function getConsole() {

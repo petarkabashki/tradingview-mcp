@@ -1,5 +1,6 @@
 """Build the plan that `tv portfolio apply` executes."""
 
+from t212_tv.pine import INDICATOR_NAME, render_pine
 from t212_tv.positions import Position
 
 DEFAULT_LAYOUT = "T212 Positions"
@@ -30,20 +31,23 @@ def build_plan(
         raise ValueError("No open positions to plan")
     if not 1 <= page_size <= 16:
         raise ValueError(f"page_size must be between 1 and 16, got {page_size}")
+    entries = [
+        {
+            "ticker": p.ticker,
+            "tv_symbol": symbols[p.isin or p.ticker],
+            "entry_price": float(p.entry_price),
+            "currency": p.currency,
+        }
+        for p in positions
+    ]
+    feeds = feeds or []
     return {
-        "version": 3,
+        "version": 4,
         "watchlist": {"name": watchlist_name, "id": state.get("watchlist_id"), "activate": activate},
         "layout": {"name": layout_name, "id": state.get("layout_id")},
         "page_size": page_size,
-        "positions": [
-            {
-                "ticker": p.ticker,
-                "tv_symbol": symbols[p.isin or p.ticker],
-                "entry_price": float(p.entry_price),
-                "currency": p.currency,
-            }
-            for p in positions
-        ],
-        "feeds": feeds or [],
+        "positions": entries,
+        "feeds": feeds,
         "line": ENTRY_LINE,
+        "indicator": {"name": INDICATOR_NAME, "source": render_pine(entries, feeds, ENTRY_LINE)},
     }

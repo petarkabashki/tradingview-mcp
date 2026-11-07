@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  detectView, diffLines, feedExchanges, lineText, onListing, pageCount, pageEntries, pickGrid,
+  detectView, feedExchanges, levelMatches, onListing, pageCount, pageEntries, pickGrid,
   resolvePage, sameTicker, validatePlan,
 } from '../src/core/portfolio.js';
 
@@ -11,16 +11,16 @@ const position = (ticker, price = 10, exchange = 'NASDAQ') => ({
 });
 const positions = [position('AAA', 10.5), position('BBB', 20, 'NYSE')];
 const plan = (overrides = {}) => ({
-  version: 3,
+  version: 4,
   watchlist: { name: 'list', id: null },
   layout: { name: 'layout', id: null },
   page_size: 2,
   positions,
   feeds: [],
   line,
+  indicator: { name: 'Entries', source: 'indicator("Entries", overlay=true)' },
   ...overrides,
 });
-const onChart = (price, overrides = {}) => ({ id: `id${price}`, price, ...line, ...overrides });
 
 const five = ['AAA', 'BBB', 'CCC', 'DDD', 'EEE'].map(t => position(t));
 const boats = {
@@ -38,15 +38,24 @@ const paged = plan({ positions: five, feeds: [boats, perp] });
 
 describe('validatePlan', () => {
   it('accepts a good plan', () => {
-    assert.equal(validatePlan(plan()).version, 3);
+    assert.equal(validatePlan(plan()).version, 4);
   });
 
   it('accepts more positions than one page holds', () => {
     assert.equal(validatePlan(paged).positions.length, 5);
   });
 
-  it('refuses a plan from before paging', () => {
-    assert.throws(() => validatePlan(plan({ version: 2 })), /Unsupported plan version/);
+  it('refuses a plan from before the entries indicator', () => {
+    assert.throws(() => validatePlan(plan({ version: 3 })), /Unsupported plan version/);
+  });
+
+  it('needs an indicator', () => {
+    assert.throws(() => validatePlan(plan({ indicator: undefined })), /indicator.name/);
+  });
+
+  it('refuses a source that would save under another name', () => {
+    const indicator = { name: 'Entries', source: 'indicator("Other")' };
+    assert.throws(() => validatePlan(plan({ indicator })), /does not declare/);
   });
 
   for (const page_size of [0, 17, 2.5, '4']) {
@@ -266,43 +275,19 @@ describe('detectView', () => {
   });
 });
 
-describe('diffLines', () => {
-  it('draws when nothing is there', () => {
-    assert.deepEqual(diffLines([], { ...line, price: 10 }), { keep: null, remove: [], create: true });
+describe('levelMatches', () => {
+  it('finds the entry among the levels a chart reports', () => {
+    assert.equal(levelMatches([250.25], 250.25), true);
+    assert.equal(levelMatches([12, 75.5], 75.5), true);
   });
 
-  it('keeps a matching line, so re-running adds nothing', () => {
-    const existing = onChart(10);
-    assert.deepEqual(diffLines([existing], { ...line, price: 10 }), { keep: existing, remove: [], create: false });
+  it('allows for display rounding only', () => {
+    assert.equal(levelMatches([141.5], 141.504), true);
+    assert.equal(levelMatches([141.5], 141.6), false);
   });
 
-  it('replaces a line at an old price', () => {
-    const stale = onChart(9);
-    assert.deepEqual(diffLines([stale], { ...line, price: 10 }), { keep: null, remove: [stale], create: true });
-  });
-
-  it('replaces a line whose style drifted', () => {
-    const thin = onChart(10, { width: 1 });
-    const diff = diffLines([thin], { ...line, price: 10 });
-    assert.deepEqual(diff.remove, [thin]);
-    assert.equal(diff.create, true);
-  });
-
-  it('removes duplicates and keeps one', () => {
-    const first = onChart(10);
-    const second = { ...onChart(10), id: 'dup' };
-    const diff = diffLines([first, second], { ...line, price: 10 });
-    assert.equal(diff.keep, first);
-    assert.deepEqual(diff.remove, [second]);
-  });
-
-  it('matches colour regardless of case', () => {
-    assert.equal(diffLines([onChart(10, { color: '#00c853' })], { ...line, price: 10 }).create, false);
-  });
-});
-
-describe('lineText', () => {
-  it('starts with the tag used to find the line again', () => {
-    assert.equal(lineText('T212 entry', 175.56), 'T212 entry 175.56');
+  it('treats a chart with no line as no match', () => {
+    assert.equal(levelMatches([], 10), false);
+    assert.equal(levelMatches(undefined, 10), false);
   });
 });

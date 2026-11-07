@@ -186,7 +186,7 @@ def remember_result(state: dict, result: dict) -> None:
             state.setdefault("feeds", {}).setdefault(wl["feed"], {})["watchlist_id"] = wl["id"]
     if (result.get("layout") or {}).get("id"):
         state["layout_id"] = result["layout"]["id"]
-    state["lines"] = {p["symbol"]: p["line_id"] for p in result.get("panes", [])}
+    state.pop("lines", None)
 
 
 def cmd_sync(args) -> int:
@@ -209,12 +209,12 @@ def cmd_sync(args) -> int:
     _, check = run_tv("portfolio", "verify", "--plan", str(args.ingest / PLAN_FILE), "--reload")
     verified = describe_check(check)
     write_status(args, state, plan, verified)
-    drawn = sum(p["action"] == "drawn" for p in result["panes"])
     for wl in result["watchlists"]:
         print(f"Watchlist {wl['action']}: {wl['name']} ({wl['id']})")
     print(f"Layout: {plan['layout']['name']} ({state['layout_id']}), {plan['page_size']} per page")
     print_pages(plan)
-    print(f"Entry lines: {drawn} drawn, {len(result['panes']) - drawn} kept")
+    removed = sum(p["drawn_lines_removed"] for p in result["panes"])
+    print(f"Entry lines: indicator {result['indicator']['name']} {result['indicator']['action']}, {removed} old drawn line(s) removed")
     print(f"Verification {verified}")
     print(f"Notes: {args.ingest / NOTES_FILE}")
     return 0 if check.get("success") else 1
@@ -239,7 +239,7 @@ def cmd_page(args) -> int:
     if not ok:
         print(f"error: {result.get('error')}", file=sys.stderr)
         return 1
-    print(f"Page {result['page']} of {result['pages']} on {result['feed']}, {result['drawn']} line(s) drawn")
+    print(f"Page {result['page']} of {result['pages']} on {result['feed']}, indicator added to {result['indicators_added']} pane(s)")
     for pane in result["panes"]:
         note = "  (feed has no symbol, showing primary)" if pane["fallback"] else ""
         print(f"  {pane['pane'] + 1}. {pane['symbol']:24} entry {pane['price']}{note}")

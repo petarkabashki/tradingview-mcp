@@ -62,7 +62,6 @@ def render(
     verified: str,
 ) -> str:
     line = plan["line"]
-    lines_by_symbol = state.get("lines", {})
     symbols = {p["ticker"]: p["tv_symbol"] for p in plan["positions"]}
     places = {
         p["ticker"]: (page, pane)
@@ -76,11 +75,11 @@ def render(
             ["Watchlist", plan["watchlist"]["name"], state.get("watchlist_id") or "not created", f"{len(positions)} symbols"],
             _layout_row(plan),
             *_feed_rows(plan, state),
-            ["Entry lines", f"tag `{line['tag']}`", "see Assets", f"{line['color']}, width {line['width']}, dashed"],
+            ["Entry lines", plan["indicator"]["name"], "private Pine script", f"{line['color']}, width {line['width']}, dashed, any held symbol"],
         ],
     )
     assets = _table(
-        ["Page", "Pane", "Ticker", "Name", "ISIN", "TradingView", "Shares", "Entry", "Cost", "First buy (UTC)", "Line"],
+        ["Page", "Pane", "Ticker", "Name", "ISIN", "TradingView", "Shares", "Entry", "Cost", "First buy (UTC)"],
         [
             [
                 *places[p.ticker],
@@ -92,7 +91,6 @@ def render(
                 f"{p.entry_price.normalize():f} {p.currency}",
                 f"{p.cost:.2f} {p.currency}",
                 p.first_buy.strftime("%Y-%m-%d %H:%M"),
-                lines_by_symbol.get(symbols[p.ticker], "none"),
             ]
             for p in positions
         ],

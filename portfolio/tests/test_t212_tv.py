@@ -177,11 +177,13 @@ def test_plan_carries_known_ids_and_line_style(tmp_path):
     position = one_position(tmp_path)
     state = {"watchlist_id": 7, "layout_id": "abc"}
     plan = build_plan([position], {"USAAA": "NASDAQ:AAA"}, state)
-    assert plan["version"] == 3
+    assert plan["version"] == 4
     assert plan["watchlist"]["id"] == 7
     assert plan["layout"] == {"name": "T212 Positions", "id": "abc"}
     assert plan["line"] == {"color": "#00C853", "width": 4, "style": 2, "tag": "T212 entry"}
     assert plan["positions"][0]["entry_price"] == 100.0
+    assert plan["indicator"]["name"] == "T212 Entries"
+    assert '"AAA|USD" => 100.0' in plan["indicator"]["source"]
 
 
 def several_positions(tmp_path, tickers):
@@ -230,25 +232,25 @@ def test_a_partial_run_remembers_what_it_created():
         {
             "watchlists": [{"feed": "primary", "id": 1}, {"feed": "boats", "id": 2}],
             "layout": {"id": "abc"},
-            "panes": [{"symbol": "NASDAQ:AAA", "line_id": "l1"}],
+            "panes": [{"symbol": "NASDAQ:AAA"}],
         },
     )
     assert state["watchlist_id"] == 1
     assert state["feeds"]["boats"]["watchlist_id"] == 2
     assert state["layout_id"] == "abc"
-    assert state["lines"] == {"NASDAQ:AAA": "l1"}
+    assert "lines" not in state
 
 
-def notes_block(tmp_path, ticker_state=None, feeds=None, feed_state=None):
+def notes_block(tmp_path, feeds=None, feed_state=None):
     position = one_position(tmp_path)
-    state = {"watchlist_id": 7, "layout_id": "abc", "lines": ticker_state or {}, "feeds": feed_state or {}}
+    state = {"watchlist_id": 7, "layout_id": "abc", "feeds": feed_state or {}}
     plan = build_plan([position], {"USAAA": "NASDAQ:AAA"}, state, feeds=feeds)
     return render([position], plan, state, [], ["a.csv"], "2026-01-01 00:00 UTC", "passed")
 
 
 def test_notes_record_assets_and_artefacts(tmp_path):
-    block = notes_block(tmp_path, {"NASDAQ:AAA": "line1"})
-    for expected in ("https://www.tradingview.com/chart/abc/", "t212-positions", "NASDAQ:AAA", "line1", "100 USD"):
+    block = notes_block(tmp_path)
+    for expected in ("https://www.tradingview.com/chart/abc/", "t212-positions", "NASDAQ:AAA", "T212 Entries", "100 USD"):
         assert expected in block
 
 

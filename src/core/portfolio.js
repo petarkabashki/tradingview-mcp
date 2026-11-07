@@ -1,15 +1,17 @@
 /**
  * Apply a position plan to TradingView: a single layout that pages through the
- * positions, watchlists, and one tagged entry line per position. A tab holds
- * only so many charts (8 on Premium), so a page shows a slice of the positions
- * and `page` flips the same panes to the next slice.
+ * positions, watchlists, and an entry line for each position. A tab holds only
+ * so many charts (8 on Premium), so a page shows a slice of the positions and
+ * `page` flips the same panes to the next slice.
  *
- * TradingView keeps a drawing with its pane and symbol, so a line comes back when
- * a pane shows that symbol again. A pair that has never been shown gets its line
- * as it appears: this is what keeps every page, page size and feed marked.
+ * The entry lines come from one saved Pine indicator that holds every entry
+ * price and looks up the symbol it is running on. A drawing stays with its pane
+ * and symbol, so it cannot follow a symbol picked from the watchlist; a study
+ * stays with the pane, so any symbol shown there gets its line. Drawn lines from
+ * earlier versions are removed as their pane shows them.
  *
  * This all runs in a single process on purpose. A separate `tv` process attaches
- * to the first chart tab it finds, so a loop of CLI calls could draw on whatever
+ * to the first chart tab it finds, so a loop of CLI calls could write to whatever
  * layout happens to be first. Here we attach to the plan's layout, and every
  * write first confirms that layout is still the one attached.
  *
@@ -20,7 +22,10 @@ import { evaluate, getChartApi, getClient, safeString } from '../connection.js';
 import { readFile } from 'node:fs/promises';
 import * as tab from './tab.js';
 import * as pane from './pane.js';
+import * as data from './data.js';
 import * as drawing from './drawing.js';
+import * as indicators from './indicators.js';
+import * as pine from './pine.js';
 import * as watchlist from './watchlist.js';
 import { layoutCurrent, layoutList, layoutSave } from './ui.js';
 
@@ -31,7 +36,8 @@ export const GRID_CAPACITY = {
 
 const GRID_ORDER = ['s', '2h', '3h', '4', '6', '8', '10', '12', '14', '16'];
 const PRIMARY = 'primary';
-const PRICE_EPSILON = 1e-6;
+// Pine levels are read back through the chart, so allow for display rounding.
+const LEVEL_TOLERANCE = 0.01;
 const TV_SYMBOL = /^[A-Z0-9_.-]+:[A-Z0-9_.!-]+$/;
 const FEED_NAME = /^[a-z0-9_-]+$/;
 
@@ -55,7 +61,7 @@ function validateFeeds(plan, tickers) {
 
 /** Throws on the first problem, so a bad plan never reaches the live app. */
 export function validatePlan(plan) {
-  if (plan?.version !== 3) throw new Error(`Unsupported plan version: ${plan?.version}`);
+  if (plan?.version !== 4) throw new Error(`Unsupported plan version: ${plan?.version}`);
   if (!plan.watchlist?.name?.trim()) throw new Error('Plan needs watchlist.name');
   if (!plan.layout?.name?.trim()) throw new Error('Plan needs layout.name');
   if (!Number.isInteger(plan.page_size) || plan.page_size < 1 || plan.page_size > 16) {
@@ -85,6 +91,12 @@ export function validatePlan(plan) {
   if (![1, 2, 3, 4].includes(width)) throw new Error(`Bad line.width: ${width}`);
   if (![0, 1, 2].includes(style)) throw new Error(`Bad line.style: ${style}`);
   if (!tag?.trim()) throw new Error('Plan needs line.tag');
+
+  const { name, source } = plan.indicator || {};
+  if (!name?.trim()) throw new Error('Plan needs indicator.name');
+  if (!String(source ?? '').includes(`indicator("${name}"`)) {
+    throw new Error(`indicator.source does not declare "${name}"`);
+  }
   return plan;
 }
 
@@ -193,20 +205,9 @@ export function detectView(plan, visible) {
   return { page, feed: (plan.feeds ?? []).find(shows)?.name ?? null };
 }
 
-export function lineText(tag, price) {
-  return `${tag} ${price}`;
-}
-
-/**
- * Decide what to change on one pane. Only lines carrying our tag are passed in,
- * so the user's own drawings never appear here.
- */
-export function diffLines(existing, { price, color, width, style }) {
-  const isWanted = l => Math.abs(l.price - price) < PRICE_EPSILON
-    && (l.color || '').toLowerCase() === color.toLowerCase()
-    && l.width === width && l.style === style;
-  const keep = existing.find(isWanted) || null;
-  return { keep, remove: existing.filter(l => l !== keep), create: !keep };
+/** True when the indicator's levels on a chart include the entry price. */
+export function levelMatches(levels, price) {
+  return (levels ?? []).some(level => Math.abs(level - price) < LEVEL_TOLERANCE);
 }
 
 async function assertLayout(expected) {
@@ -277,8 +278,8 @@ async function readEntryLines(tag) {
 }
 
 /**
- * Drawings can arrive just after the symbol does. Drawing into that gap would
- * duplicate a line, so an empty read gets a moment to fill.
+ * Drawings can arrive just after the symbol does, so an empty read gets a moment
+ * to fill. A full sync uses this; a page flip takes the quick read instead.
  */
 async function settledEntryLines(tag) {
   const deadline = Date.now() + 1500;
@@ -335,30 +336,60 @@ async function showEntry(index, entry, exchanges, target) {
   await waitForListing(entry.tv_symbol, exchanges);
 }
 
-async function syncPane(index, entry, line, exchanges, target) {
-  await showEntry(index, entry, exchanges, target);
-
-  const price = entry.entry_price;
-  const report = { pane: index, ticker: entry.ticker, symbol: entry.tv_symbol, price, fallback: entry.fallback };
-  const { keep, remove, create } = diffLines(await settledEntryLines(line.tag), { ...line, price });
-  for (const stale of remove) await drawing.removeOne({ entity_id: stale.id });
-  if (!create) return { ...report, line_id: keep.id, action: 'kept' };
-
-  const drawn = await drawing.drawShape({
-    shape: 'horizontal_line',
-    point: { time: Math.floor(Date.now() / 1000), price },
-    text: lineText(line.tag, price),
-    overrides: {
-      linecolor: line.color, linewidth: line.width, linestyle: line.style,
-      showLabel: true, textcolor: line.color, horzLabelsAlign: 'right', vertLabelsAlign: 'bottom',
-    },
-  });
-  if (!drawn.entity_id) throw new Error(`No line appeared on pane ${index} (${entry.tv_symbol}).`);
-  return { ...report, line_id: drawn.entity_id, action: 'drawn' };
+async function entryStudies(name) {
+  const api = await getChartApi();
+  const ids = await evaluate(`
+    ${api}.getAllStudies()
+      .filter(function(s) { return s.name === ${safeString(name)}; })
+      .map(function(s) { return s.id; })
+  `);
+  return ids ?? [];
 }
 
-/** Put one page on the panes, repairing its entry lines. */
-async function showPage(plan, page, feed, target) {
+async function removeStudies(ids) {
+  const api = await getChartApi();
+  for (const id of ids) await evaluate(`${api}.removeEntity(${safeString(id)})`);
+}
+
+/** The script list can lag a save by a few seconds, so a miss gets another try. */
+async function addEntryStudy(name) {
+  let added = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, 2500));
+    added = await indicators.addStudyFromSearch({ query: name, match: name, section: 'my scripts' }).catch(err => ({ error: err.message }));
+    if (added.success) return;
+  }
+  throw new Error(`Could not add "${name}": ${added.error ?? 'it did not appear on the chart'}.`);
+}
+
+/**
+ * Put the indicator on the pane showing now. A pane in `refresh` still runs the
+ * old source of a script that just changed, so its study is swapped first.
+ */
+async function ensureEntryStudy(index, name, refresh) {
+  const studies = await entryStudies(name);
+  const swapping = refresh ? !refresh.has(index) : false;
+  refresh?.add(index);
+  if (studies.length === 1 && !swapping) return 'kept';
+  if (studies.length) await removeStudies(studies);
+  await addEntryStudy(name);
+  return studies.length ? 'replaced' : 'added';
+}
+
+async function syncPane(index, entry, plan, exchanges, target, { settle = false, refresh = null } = {}) {
+  await showEntry(index, entry, exchanges, target);
+
+  const indicator = await ensureEntryStudy(index, plan.indicator.name, refresh);
+  const drawn = await (settle ? settledEntryLines : readEntryLines)(plan.line.tag);
+  for (const old of drawn) await drawing.removeOne({ entity_id: old.id });
+  return {
+    pane: index, ticker: entry.ticker, symbol: entry.tv_symbol, price: entry.entry_price,
+    fallback: entry.fallback, indicator, drawn_lines_removed: drawn.length,
+  };
+}
+
+/** Put one page on the panes, repairing the indicator on each. */
+async function showPage(plan, page, feed, target, options) {
   const entries = pageEntries(plan, page, feed);
   await assertLayout(target);
   await ensureGrid(pickGrid(entries.length));
@@ -366,7 +397,7 @@ async function showPage(plan, page, feed, target) {
   const exchanges = feedExchanges(plan);
   const panes = [];
   for (const [index, entry] of entries.entries()) {
-    panes.push(await syncPane(index, entry, plan.line, exchanges, target));
+    panes.push(await syncPane(index, entry, plan, exchanges, target, options));
   }
   await assertLayout(target);
   await pane.focus({ index: 0 });
@@ -384,7 +415,20 @@ export async function loadPlan(path) {
   return validatePlan(JSON.parse(await readFile(path, 'utf8')));
 }
 
-/** Compare one page with the plan. Flips panes to read them; draws nothing. */
+/** Levels the indicator draws on the chart showing now, once it has run on this symbol. */
+async function entryLevels(name, price) {
+  const deadline = Date.now() + 8000;
+  let levels = [];
+  while (Date.now() < deadline) {
+    const { studies } = await data.getPineLines({ study_filter: name });
+    levels = studies?.[0]?.horizontal_levels ?? [];
+    if (levelMatches(levels, price)) break;
+    await new Promise(r => setTimeout(r, 400));
+  }
+  return levels;
+}
+
+/** Compare one page with the plan. Flips panes to read them; adds nothing. */
 async function inspectPage(plan, page, target) {
   const problems = [];
   const lines = [];
@@ -396,11 +440,18 @@ async function inspectPage(plan, page, target) {
   for (const [index, entry] of entries.entries()) {
     const label = `page ${page + 1} pane ${index} (${entry.tv_symbol})`;
     await showEntry(index, entry, exchanges, target);
-    const found = await settledEntryLines(plan.line.tag);
-    const { keep, remove } = diffLines(found, { ...plan.line, price: entry.entry_price });
-    if (!keep) problems.push(`${label}: no matching entry line`);
-    if (remove.length) problems.push(`${label}: ${remove.length} other tagged line(s)`);
-    if (keep) lines.push({ page: page + 1, pane: index, symbol: entry.tv_symbol, line_id: keep.id, price: keep.price });
+    const studies = await entryStudies(plan.indicator.name);
+    if (studies.length !== 1) problems.push(`${label}: ${studies.length} "${plan.indicator.name}" studies, expected 1`);
+
+    const levels = studies.length ? await entryLevels(plan.indicator.name, entry.entry_price) : [];
+    if (levelMatches(levels, entry.entry_price)) {
+      lines.push({ page: page + 1, pane: index, symbol: entry.tv_symbol, price: entry.entry_price });
+    } else {
+      problems.push(`${label}: no entry line at ${entry.entry_price} from the indicator (saw ${levels.join(', ') || 'none'})`);
+    }
+
+    const drawn = await settledEntryLines(plan.line.tag);
+    if (drawn.length) problems.push(`${label}: ${drawn.length} leftover drawn line(s)`);
   }
   return { problems, lines };
 }
@@ -457,9 +508,22 @@ export async function apply({ plan_path }) {
     const target = await attachLayout(plan.layout);
     result.layout = target;
 
+    await assertLayout(target);
+    const script = await pine.saveNamed(plan.indicator);
+    result.indicator = { name: script.name, action: script.action };
+
+    // Each pane swaps its study once if the script changed; drawn lines from
+    // earlier versions are cleared here, feeds included.
+    const options = { settle: true, refresh: script.action === 'updated' ? new Set() : null };
+    for (const feed of plan.feeds ?? []) {
+      for (let page = pageCount(plan) - 1; page >= 0; page -= 1) {
+        await showPage(plan, page, feed.name, target, options);
+      }
+    }
+
     // Last page first, so the layout ends up on page 1.
     for (let page = pageCount(plan) - 1; page >= 0; page -= 1) {
-      const panes = await showPage(plan, page, null, target);
+      const panes = await showPage(plan, page, null, target, options);
       result.panes.push(...panes.map(p => ({ page: page + 1, ...p })));
     }
 
@@ -504,7 +568,7 @@ export async function page({ plan_path, page: request = 'current', feed }) {
     feed: chosen ?? PRIMARY,
     panes,
     on_primary: panes.filter(p => p.fallback).map(p => p.ticker),
-    drawn: panes.filter(p => p.action === 'drawn').length,
+    indicators_added: panes.filter(p => p.indicator !== 'kept').length,
     save: { method: saved.method, confirmed: saved.confirmed },
   };
 }
@@ -529,8 +593,8 @@ async function reloadTab() {
 /**
  * Check the live state against the plan, flipping through every page on the
  * primary listings and then back to the page that was showing. With `reload`,
- * reloads the layout's tab first, which proves the state was saved, not just
- * drawn. Feed charts are not checked: their lines appear as they are shown.
+ * reloads the layout's tab first, which proves the state was saved. Feed charts
+ * are not checked: the same indicator serves them.
  */
 export async function verify({ plan_path, reload = false }) {
   const plan = await loadPlan(plan_path);
@@ -542,7 +606,7 @@ export async function verify({ plan_path, reload = false }) {
     await reloadTab();
   }
 
-  // Panes and drawings load after the widgets exist, so give a reload time.
+  // Panes and studies load after the widgets exist, so give a reload time.
   const deadline = Date.now() + (reload ? 20000 : 0);
   const view = await liveView(plan);
   let found;

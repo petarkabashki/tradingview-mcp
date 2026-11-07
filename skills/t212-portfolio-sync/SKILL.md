@@ -14,14 +14,14 @@ You keep TradingView in step with the user's Trading 212 positions. The Python t
 | Layout | `T212 Positions` | One layout. Positions fill pages of 4 or 8 charts, and a page flip swaps the symbols in place |
 | Watchlist | `t212-positions` | Every open position; made the active list in the layout |
 | Feed watchlists | `t212-overnight`, `t212-perps` | The same positions on another provider, plus `ES1!` and `NQ1!` |
-| Entry lines | Green `#00C853`, width 4, dashed, labelled `T212 entry <price>` | The price is the pooled average cost of the open position |
+| Entry lines | Private Pine indicator `T212 Entries`: green `#00C853`, width 4, dashed, labelled `T212 entry <price>` | On every pane, so any held symbol shows its line, however it was picked. The price is the pooled average cost of the open position |
 | Notes | `<ingest>/tradingview-notes.md` | Assets, ids, pages, feeds and line style; rewritten on every sync |
 
 Files in the ingest folder:
 
 - `*.csv`: the Trading 212 exports. Overlapping exports are fine, rows are deduplicated by `ID`.
 - `.t212-tv-state.json`: the ids of what the tool owns, plus the last feed check and page size. It only touches these.
-- `t212-plan.json`: the last plan.
+- `t212-plan.json`: the last plan, including the generated Pine source with the entry prices.
 - `tradingview-notes.md`: the notes.
 - `symbol-map.toml` (optional): your overrides from ISIN or ticker to TradingView symbol.
 - `feeds.toml` (optional): your feeds and pinned symbols.
@@ -58,7 +58,7 @@ uv run --project portfolio t212-tv --ingest <folder> sync
 US0378331005 = "NASDAQ:AAPL"
 ```
 
-`sync` is idempotent: matching lines are kept, and a line at an old price or in an old style is replaced. It leaves the layout on page 1. Options, which go before the subcommand:
+`sync` is idempotent. It saves `T212 Entries` when the prices changed, puts the indicator on every pane, and removes any drawn entry line left by an earlier version. It leaves the layout on page 1. Options, which go before the subcommand:
 
 - `--page-size N`: charts per page, 4 or 8 in normal use. Defaults to 8, the Premium limit. It sticks until changed.
 - `--layout NAME`, `--watchlist NAME`: use other names.
@@ -73,7 +73,7 @@ uv run --project portfolio t212-tv --ingest <folder> page 2
 uv run --project portfolio t212-tv --ingest <folder> --page-size 4 page 1
 ```
 
-`next` and `prev` wrap around. Each page puts its positions in the grid and draws any entry line that is missing, so a page heals itself. The result lists the entries on the page.
+`next` and `prev` wrap around. Each page puts its positions in the grid and adds the indicator to any pane that lacks it, so a page heals itself. The result lists the entries on the page.
 
 Grids fill column by column on an 8-chart page, so read a pane's symbol from the output and not from its position on screen.
 
@@ -131,7 +131,7 @@ Never relax this check to fill a gap. Tickers collide across asset classes: `STX
 uv run --project portfolio t212-tv --ingest <folder> verify --reload
 ```
 
-`--reload` reloads the layout's tab first, so a pass shows the lines survived on the server and not only in the page. Every page is flipped through and your view is put back. Report any `problems` to the user as they are. For a visual check, bring the layout forward and take a screenshot:
+`--reload` reloads the layout's tab first, so a pass shows the indicator survived on the server and not only in the page. On each pane it reads the line the indicator drew and compares it with the plan's price. Every page is flipped through and your view is put back. Report any `problems` to the user as they are. For a visual check, bring the layout forward and take a screenshot:
 
 ```bash
 node src/cli/index.js tab switch <index>
@@ -143,14 +143,17 @@ node src/cli/index.js screenshot -r full -o <name>
 ## Rules
 
 - Only write through `t212-tv` or `tv portfolio`. Each `tv` call attaches to whichever chart tab comes first, so a loop of `tv draw` or `tv symbol` calls can land on the wrong layout. `apply` and `page` run in one process and confirm the layout's id and name before each write.
-- Leave the user's other layouts, watchlists and drawings alone.
+- Leave the user's other layouts, watchlists, drawings and Pine scripts alone.
+- Save `T212 Entries` only through `sync`. `pine_set_source`, `pine_new` and `pine_open` replace the editor's text but leave it bound to the script that was open, so a save after them overwrites that script. `pine.saveNamed` checks the binding, and stops if the editor holds unsaved work.
 - `tab_close` closes whichever tab the tab bar shows as active. Before closing, read `shell_tabs` from `tab_list` and confirm that is the tab you mean. `tab_switch` returns `shell_active: null` when it could not match the tab bar, for example when a layout is open twice: stop there.
 - Never click an upgrade or purchase prompt. TradingView silently refuses a grid above the plan's limit and shows an upsell; the tool reports this as a grid error, and the answer is a lower `--page-size`.
 
 ## Known limits
 
-- TradingView stores a line against a pane and a symbol, and it comes back when that pane shows that symbol. The first view of a page on a feed draws its lines and takes about 20 seconds. Later views take 3 to 8.
-- Only lines on the symbol a pane currently shows can be read. If a position closes, or a change in page size moves it to another pane, its old line stays hidden on the old pane and symbol until that pane shows the symbol again. A line at the wrong price or in the wrong style is replaced only when its pane is showing its symbol.
+- The indicator shows positions from the last `sync`. A new position or a changed price has no correct line until `sync` runs. A closed position loses its line on that sync.
+- Studies belong to a pane. `sync` covers the panes one page uses. Panes opened by a bigger grid, or charts in other layouts, have no line until a page or sync has shown them with the indicator.
+- A listing matches on ticker and currency, so a foreign listing of the same ticker gets no line. A feed with another ticker, such as a perpetual, matches on its ticker alone.
+- A drawn line from an earlier version is removed when its pane shows its symbol. `sync` covers the current page size and feeds; one left by another page size goes when a page next shows it.
 - A page does not change the active watchlist. Pick `t212-overnight` or `t212-perps` in the watchlist panel to see those prices listed.
 - TradingView's 24h session toggle is a per-chart setting on intraday timeframes. The tool does not set it.
 - TradingView may report another feed for a symbol, such as `BATS:AMAT` for `NASDAQ:AMAT`, or `BOATS_LS:AMAT` for `BOATS:AMAT`. On a primary page these are compared by ticker. On a feed page the exchange must match too.

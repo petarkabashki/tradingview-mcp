@@ -3,14 +3,14 @@ import { jsonResult } from './_format.js';
 import * as core from '../core/portfolio.js';
 
 export function registerPortfolioTools(server) {
-  server.tool('portfolio_apply', 'Apply a position plan file: sync its watchlists and single paged layout, and draw one entry line per position. Plans come from the Python tooling in portfolio/.', {
+  server.tool('portfolio_apply', 'Apply a position plan file: save its entry-line Pine indicator, sync its watchlists and single paged layout, and put the indicator on every pane. Plans come from the Python tooling in portfolio/.', {
     plan_path: z.string().describe('Path to the plan JSON file'),
   }, async ({ plan_path }) => {
     try { return jsonResult(await core.apply({ plan_path })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
-  server.tool('portfolio_page', 'Flip the paged layout to another page of positions or another price feed, drawing any entry line that is missing. Keeps the feed showing unless one is given.', {
+  server.tool('portfolio_page', 'Flip the paged layout to another page of positions or another price feed, adding the entry-line indicator to any pane that lacks it. Keeps the feed showing unless one is given.', {
     plan_path: z.string().describe('Path to the plan JSON file'),
     page: z.coerce.string().optional().describe('next, prev, current, or a 1-based page number (default: current)'),
     feed: z.string().optional().describe('Feed from the plan, e.g. boats or perp; primary returns to the normal listings'),

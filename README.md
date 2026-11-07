@@ -301,7 +301,7 @@ uv run --project portfolio t212-tv --ingest <folder> feed check     # test each 
 uv run --project portfolio t212-tv --ingest <folder> verify --reload
 ```
 
-All positions share one layout, in pages of `--page-size` charts: 8 by default, the Premium limit, or 4. Each has a thick green dashed line at its entry price. Feeds show the same positions from another provider, such as BOATS overnight or crypto perpetuals, to follow prices outside US hours. The `t212-portfolio-sync` skill in `skills/` has the full workflow. Keep your exports out of git; `ingest/` is ignored.
+All positions share one layout, in pages of `--page-size` charts: 8 by default, the Premium limit, or 4. Each has a thick green dashed line at its entry price. A private Pine indicator on each pane draws it, so any held symbol picked in that pane shows its line too. Feeds show the same positions from another provider, such as BOATS overnight or crypto perpetuals, to follow prices outside US hours. The `t212-portfolio-sync` skill in `skills/` has the full workflow. Keep your exports out of git; `ingest/` is ignored.
 
 ### Pine Script Development
 
