@@ -49,6 +49,40 @@ async function readShellTabs() {
 }
 
 /**
+ * Position of a layout's tab in the tab bar, or null unless exactly one matches.
+ * Shell titles read "AAPL▲ 190.10+1.2%/ Layout name". The match is on the whole
+ * name, so "Main" never finds "Main 2". Tab bar order differs from CDP target
+ * order, so an index cannot stand in for this.
+ */
+export function shellIndexForLayout(shellTitles, layoutName) {
+  if (!layoutName) return null;
+  const hits = shellTitles.flatMap((title, i) =>
+    title === layoutName || title.endsWith(`/ ${layoutName}`) ? [i] : []);
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/** Make a layout's tab the active one in the tab bar. Null if it cannot be identified. */
+async function activateShellTab(targetId) {
+  const layoutName = await withTarget(targetId, (evalIn) =>
+    evalIn(`(function() { try { return window.TradingViewApi.layoutName(); } catch (e) { return null; } })()`));
+
+  return withShell(async (evalIn) => {
+    const tabs = await evalIn(`
+      Array.from(document.querySelectorAll('.tabs-container .tab')).map(function(t) {
+        return { title: (t.textContent || '').trim(), active: t.classList.contains('active') };
+      })
+    `);
+    const index = shellIndexForLayout(tabs.map(t => t.title), layoutName);
+    if (index === null) return null;
+    if (tabs[index].active) return true;
+
+    await evalIn(`document.querySelectorAll('.tabs-container .tab')[${index}].click()`);
+    await new Promise(r => setTimeout(r, 400));
+    return evalIn(`document.querySelectorAll('.tabs-container .tab')[${index}].classList.contains('active')`);
+  });
+}
+
+/**
  * Run fn with a CDP client attached to the Electron shell window that owns
  * the tab bar. There can be several app/window/index.html targets; the shell
  * is the one whose DOM actually contains `.tabs-container .tab`.
@@ -341,6 +375,13 @@ export async function switchTab({ index }) {
     }
   }
 
+  // A hidden tab can report itself visible, so the check above may have skipped
+  // the click. Confirm the tab bar agrees: closeTab acts on the tab bar's choice.
+  const shellActive = target.is_chart ? await activateShellTab(target.id) : null;
+  if (shellActive === false) {
+    throw new Error(`Clicked the tab for chart ${target.chart_id} but the tab bar did not activate it.`);
+  }
+
   // Re-attach the cached CDP client so subsequent reads follow the switch.
   try {
     await reconnectTo(target.id);
@@ -348,5 +389,13 @@ export async function switchTab({ index }) {
     throw new Error(`Tab is visible but failed to re-attach CDP to it: ${e.message}`);
   }
 
-  return { success: true, action: 'switched', index: idx, tab_id: target.id, chart_id: target.chart_id, visually_switched: true };
+  return {
+    success: true,
+    action: 'switched',
+    index: idx,
+    tab_id: target.id,
+    chart_id: target.chart_id,
+    visually_switched: true,
+    shell_active: shellActive,
+  };
 }

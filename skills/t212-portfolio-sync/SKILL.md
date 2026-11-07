@@ -144,7 +144,7 @@ node src/cli/index.js screenshot -r full -o <name>
 
 - Only write through `t212-tv` or `tv portfolio`. Each `tv` call attaches to whichever chart tab comes first, so a loop of `tv draw` or `tv symbol` calls can land on the wrong layout. `apply` and `page` run in one process and confirm the layout's id and name before each write.
 - Leave the user's other layouts, watchlists and drawings alone.
-- Do not close tabs with `tv tab close` or `tab_close` after `tab switch`. A hidden tab can report itself visible, so the switch skips the click and the close hits whichever tab the tab bar shows as active. Ask the user to close it.
+- `tab_close` closes whichever tab the tab bar shows as active. Before closing, read `shell_tabs` from `tab_list` and confirm that is the tab you mean. `tab_switch` returns `shell_active: null` when it could not match the tab bar, for example when a layout is open twice: stop there.
 - Never click an upgrade or purchase prompt. TradingView silently refuses a grid above the plan's limit and shows an upsell; the tool reports this as a grid error, and the answer is a lower `--page-size`.
 
 ## Known limits
