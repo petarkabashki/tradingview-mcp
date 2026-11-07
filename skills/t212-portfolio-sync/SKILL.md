@@ -1,6 +1,6 @@
 ---
 name: t212-portfolio-sync
-description: Mirror Trading 212 CSV exports into one paged TradingView layout with a watchlist, green dashed entry-price lines and out-of-hours feeds, and keep markdown notes on them. Use when the user adds or changes a Trading 212 export, asks to flip pages or change page size, asks to see prices outside US hours or manage feeds and providers, asks to update entry lines or the positions list, or asks what is being managed in TradingView.
+description: Mirror Trading 212 CSV exports into one paged TradingView layout with a watchlist, green dashed entry-price lines and out-of-hours feeds, and keep markdown notes on them. Use when the user adds or changes a Trading 212 export, asks to flip pages or change page size, asks to see prices outside US hours or manage feeds and providers, asks to update entry lines or the positions list, asks about unrealized profit and loss, returns or portfolio weights, or asks what is being managed in TradingView.
 ---
 
 # Trading 212 Portfolio Sync
@@ -139,6 +139,30 @@ node src/cli/index.js screenshot -r full -o <name>
 ```
 
 `screenshots/` is ignored by git. Keep it that way: these images show the user's positions.
+
+## Step 7: Unrealized P&L
+
+```bash
+uv run --project portfolio t212-tv --ingest <folder> pnl                 # table, primary listings
+uv run --project portfolio t212-tv --ingest <folder> pnl --feed perp     # out-of-hours prices
+uv run --project portfolio t212-tv --ingest <folder> pnl --base GBP      # totals and weights in GBP
+uv run --project portfolio t212-tv --ingest <folder> pnl --json --save   # JSON, also kept as t212-pnl.json
+```
+
+Or call the `portfolio_pnl` MCP tool with `ingest`, and optionally `feed`, `base` and `prices`. Prices come from TradingView's scanner, so this needs no chart and writes nothing to TradingView. It does need network access, so run it outside the sandbox.
+
+Each row reports:
+
+| Column | Meaning |
+|--------|---------|
+| P&L | `shares × price − cost`, in the position's currency |
+| P&L % | P&L over that position's cost |
+| Weight % | Market value over the portfolio's market value: the share of the portfolio |
+| Contrib % | P&L over the portfolio's total cost. These add up to the total return |
+
+A feed price is tried first and the primary listing after it, so BOATS, which has no scanner prices, falls back to the primary listing. The `source` field in the JSON says which symbol priced each row. A quote in another currency, such as USDT on a perpetual, is skipped rather than mixed in. `--price TICKER=PRICE` sets a price by hand. Exit code 2, or `partial: true` from the tool, means some positions had no price. They are listed in `missing` and left out of the totals and weights, so say so when you report.
+
+When reporting, include the caveat: these are price returns. Cost is shares × trade price from the exports. Trading 212's FX conversion fees, and FX moves since buying, are not included, so the figures differ from the app's return on a GBP account. `--base` converts cost and value at today's rate. The P&L output stays in the ingest folder; never commit it.
 
 ## Rules
 

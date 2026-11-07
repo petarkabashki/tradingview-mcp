@@ -218,7 +218,7 @@ Claude reads [`CLAUDE.md`](CLAUDE.md) automatically when working in this project
 | "Draw a level at 24500" | `draw_shape` (horizontal_line) |
 | "Take a screenshot" | `capture_screenshot` |
 
-## Tool Reference (92 MCP tools)
+## Tool Reference (93 MCP tools)
 
 ### Chart Reading
 
@@ -289,6 +289,7 @@ Read `line.new()`, `label.new()`, `table.new()`, `box.new()` output from any vis
 | `portfolio_apply` | Sync a plan's watchlists, paged layout and entry lines |
 | `portfolio_page` | Flip the layout to a page or feed, drawing any missing lines |
 | `portfolio_verify` | Compare TradingView with a plan, without writing |
+| `portfolio_pnl` | Unrealized P&L per position: amount, percent, and percent of the portfolio |
 
 `portfolio/` is a [uv](https://docs.astral.sh/uv/) project that turns Trading 212 CSV exports into such a plan and keeps markdown notes on what it manages:
 
@@ -299,6 +300,7 @@ uv run --project portfolio t212-tv --ingest <folder> page next      # flip the l
 uv run --project portfolio t212-tv --ingest <folder> page --feed boats  # same positions, overnight prices
 uv run --project portfolio t212-tv --ingest <folder> feed check     # test each feed's symbols against the listing
 uv run --project portfolio t212-tv --ingest <folder> verify --reload
+uv run --project portfolio t212-tv --ingest <folder> pnl            # unrealized P&L per position and in total
 ```
 
 All positions share one layout, in pages of `--page-size` charts: 8 by default, the Premium limit, or 4. Each has a thick green dashed line at its entry price. A private Pine indicator on each pane draws it, so any held symbol picked in that pane shows its line too. Feeds show the same positions from another provider, such as BOATS overnight or crypto perpetuals, to follow prices outside US hours. The `t212-portfolio-sync` skill in `skills/` has the full workflow. Keep your exports out of git; `ingest/` is ignored.
@@ -385,7 +387,7 @@ npm test
 Claude Code  ←→  MCP Server (stdio)  ←→  CDP (port 9222)  ←→  TradingView Desktop (Electron)
 ```
 
-- **Transport**: MCP over stdio (92 tools) + CLI (`tv` command, 31 commands with 74 subcommands)
+- **Transport**: MCP over stdio (93 tools) + CLI (`tv` command, 31 commands with 74 subcommands)
 - **Connection**: Chrome DevTools Protocol on localhost:9222
 - **Streaming**: Poll-and-diff loop with deduplication, JSONL output to stdout
 - **No dependencies** beyond `@modelcontextprotocol/sdk` and `chrome-remote-interface`

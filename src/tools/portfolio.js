@@ -1,8 +1,19 @@
 import { z } from 'zod';
 import { jsonResult } from './_format.js';
 import * as core from '../core/portfolio.js';
+import { pnl } from '../core/portfolio_pnl.js';
 
 export function registerPortfolioTools(server) {
+  server.tool('portfolio_pnl', 'Unrealized P&L of the Trading 212 positions: per asset the amount, percent return, weight (percent of portfolio value) and contribution (P&L as percent of portfolio cost), plus totals. Prices come from TradingView\'s scanner; no chart is touched. Price returns only: FX fees and FX moves are not included.', {
+    ingest: z.string().optional().describe('Folder holding the Trading 212 CSVs (default: T212_INGEST)'),
+    feed: z.string().optional().describe('Price from a feed such as perp, falling back to the primary listing; primary by default'),
+    base: z.string().optional().describe('Currency for totals and weights (default: the positions\' currency, or USD when mixed)'),
+    prices: z.record(z.string(), z.coerce.number()).optional().describe('Prices to use instead of the scanner, by ticker, e.g. {"AAPL": 250.25}'),
+  }, async ({ ingest, feed, base, prices }) => {
+    try { return jsonResult(await pnl({ ingest: ingest ?? process.env.T212_INGEST, feed, base, prices })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
   server.tool('portfolio_apply', 'Apply a position plan file: save its entry-line Pine indicator, sync its watchlists and single paged layout, and put the indicator on every pane. Plans come from the Python tooling in portfolio/.', {
     plan_path: z.string().describe('Path to the plan JSON file'),
   }, async ({ plan_path }) => {
