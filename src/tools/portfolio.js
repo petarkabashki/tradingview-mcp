@@ -3,14 +3,23 @@ import { jsonResult } from './_format.js';
 import * as core from '../core/portfolio.js';
 
 export function registerPortfolioTools(server) {
-  server.tool('portfolio_apply', 'Apply a position plan file: sync its watchlist and layout, and draw one entry line per position. Plans come from the Python tooling in portfolio/.', {
+  server.tool('portfolio_apply', 'Apply a position plan file: sync its watchlists and single paged layout, and draw one entry line per position. Plans come from the Python tooling in portfolio/.', {
     plan_path: z.string().describe('Path to the plan JSON file'),
   }, async ({ plan_path }) => {
     try { return jsonResult(await core.apply({ plan_path })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
-  server.tool('portfolio_verify', 'Check a position plan against the live layout, entry lines and watchlist without changing them', {
+  server.tool('portfolio_page', 'Flip the paged layout to another page of positions or another price feed, drawing any entry line that is missing. Keeps the feed showing unless one is given.', {
+    plan_path: z.string().describe('Path to the plan JSON file'),
+    page: z.coerce.string().optional().describe('next, prev, current, or a 1-based page number (default: current)'),
+    feed: z.string().optional().describe('Feed from the plan, e.g. boats or perp; primary returns to the normal listings'),
+  }, async ({ plan_path, page, feed }) => {
+    try { return jsonResult(await core.page({ plan_path, page, feed })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
+  server.tool('portfolio_verify', 'Check a position plan against the live layout, entry lines and watchlists. Flips through the pages to read them, then returns to the page that was showing', {
     plan_path: z.string().describe('Path to the plan JSON file'),
     reload: z.coerce.boolean().optional().describe('Reload the layout tab first, which proves the state was saved'),
   }, async ({ plan_path, reload }) => {

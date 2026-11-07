@@ -23,7 +23,7 @@ const server = new McpServer(
     description: 'AI-assisted TradingView chart analysis and Pine Script development via Chrome DevTools Protocol',
   },
   {
-    instructions: `TradingView MCP — 91 tools for reading and controlling a live TradingView Desktop chart.
+    instructions: `TradingView MCP — 92 tools for reading and controlling a live TradingView Desktop chart.
 
 TOOL SELECTION GUIDE — use this to pick the right tool:
 
@@ -62,7 +62,7 @@ Panes: pane_list, pane_set_layout (s, 2h, 2v, 4, 6, 8), pane_focus, pane_set_sym
 Tabs: tab_list, tab_new, tab_close, tab_switch
 Layouts: layout_list, layout_current, layout_switch, layout_new, layout_save
 Watchlists: watchlist_list, watchlist_get, watchlist_create, watchlist_switch
-Portfolio: portfolio_apply → sync a plan (watchlist, layouts, entry lines), portfolio_verify → check it
+Portfolio: portfolio_apply → sync a plan (watchlists, paged layout, entry lines), portfolio_page → flip to a page or feed, portfolio_verify → check it
 
 CONTEXT MANAGEMENT:
 - ALWAYS use summary=true on data_get_ohlcv

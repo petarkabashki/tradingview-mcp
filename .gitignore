@@ -15,6 +15,7 @@ t212-plan.json
 .t212-tv-state.json
 tradingview-notes.md
 symbol-map.toml
+feeds.toml
 
 # Python tooling
 .venv/

@@ -1,13 +1,16 @@
 """Tests use synthetic exports only: real ones hold personal trade data."""
 
+import json
+from argparse import Namespace
 from datetime import datetime
 from decimal import Decimal
 
 import pytest
 
+from t212_tv.cli import STATE_FILE, load_state, page_size, remember_result
 from t212_tv.notes import BEGIN, END, render, write_notes
 from t212_tv.parser import ExportError, read_exports
-from t212_tv.plan import build_plan, pick_grid, plan_positions
+from t212_tv.plan import build_plan, plan_pages
 from t212_tv.positions import build_positions
 from t212_tv.resolve import UnresolvedSymbols, pick_symbol, resolve_all
 
@@ -170,24 +173,15 @@ def test_override_beats_search(tmp_path):
     assert resolve_all([position], no_search, {"AAA": "NYSE:AAA"}, {}) == {"USAAA": "NYSE:AAA"}
 
 
-@pytest.mark.parametrize("count, grid", [(1, "s"), (5, "6"), (10, "10"), (16, "16")])
-def test_grid_fits_positions(count, grid):
-    assert pick_grid(count) == grid
-
-
-def test_too_many_positions_for_one_layout():
-    with pytest.raises(ValueError, match="largest grid"):
-        pick_grid(17)
-
-
 def test_plan_carries_known_ids_and_line_style(tmp_path):
     position = one_position(tmp_path)
-    state = {"watchlist_id": 7, "layouts": {"T212 Positions": "abc"}}
+    state = {"watchlist_id": 7, "layout_id": "abc"}
     plan = build_plan([position], {"USAAA": "NASDAQ:AAA"}, state)
+    assert plan["version"] == 3
     assert plan["watchlist"]["id"] == 7
-    assert plan["layouts"][0]["id"] == "abc"
+    assert plan["layout"] == {"name": "T212 Positions", "id": "abc"}
     assert plan["line"] == {"color": "#00C853", "width": 4, "style": 2, "tag": "T212 entry"}
-    assert plan_positions(plan)[0]["entry_price"] == 100.0
+    assert plan["positions"][0]["entry_price"] == 100.0
 
 
 def several_positions(tmp_path, tickers):
@@ -195,42 +189,74 @@ def several_positions(tmp_path, tickers):
     return positions_of(export(tmp_path, *rows))[0]
 
 
-def test_positions_beyond_the_chart_limit_go_to_a_further_layout(tmp_path):
-    tickers = [f"T{i:02}" for i in range(10)]
-    positions = several_positions(tmp_path, tickers)
+@pytest.mark.parametrize("page_size, sizes", [(8, [8, 2]), (4, [4, 4, 2])])
+def test_positions_fill_pages_on_one_layout(tmp_path, page_size, sizes):
+    positions = several_positions(tmp_path, [f"T{i:02}" for i in range(10)])
     symbols = {p.isin: f"NASDAQ:{p.ticker}" for p in positions}
-    state = {"layouts": {"T212 Positions": "first"}}
-
-    layouts = build_plan(positions, symbols, state, max_charts=8)["layouts"]
-
-    assert [(x["name"], x["id"], x["grid"], len(x["positions"])) for x in layouts] == [
-        ("T212 Positions", "first", "8", 8),
-        ("T212 Positions 2", None, "2h", 2),
-    ]
+    plan = build_plan(positions, symbols, {}, page_size=page_size)
+    assert [len(page) for page in plan_pages(plan)] == sizes
+    assert plan["layout"]["name"] == "T212 Positions"
 
 
-def test_positions_within_the_limit_stay_on_one_layout(tmp_path):
-    positions = several_positions(tmp_path, ["AAA", "BBB"])
-    symbols = {p.isin: f"NASDAQ:{p.ticker}" for p in positions}
-    assert [x["name"] for x in build_plan(positions, symbols, {})["layouts"]] == ["T212 Positions"]
+@pytest.mark.parametrize("page_size", [0, 17])
+def test_impossible_page_size_is_refused(tmp_path, page_size):
+    with pytest.raises(ValueError, match="page_size"):
+        build_plan([one_position(tmp_path)], {"USAAA": "NASDAQ:AAA"}, {}, page_size=page_size)
 
 
-@pytest.mark.parametrize("max_charts", [0, 17])
-def test_impossible_chart_limit_is_refused(tmp_path, max_charts):
-    with pytest.raises(ValueError, match="max_charts"):
-        build_plan([one_position(tmp_path)], {"USAAA": "NASDAQ:AAA"}, {}, max_charts=max_charts)
+def test_state_from_before_paging_keeps_the_first_layout(tmp_path):
+    (tmp_path / STATE_FILE).write_text(
+        json.dumps({"layouts": {"T212 Positions": "first", "T212 Positions 2": "second"}}), encoding="utf-8"
+    )
+    state = load_state(tmp_path)
+    assert state["layout_id"] == "first"
+    assert "layouts" not in state
 
 
-def notes_block(tmp_path, ticker_state=None):
+def test_page_size_sticks_once_given():
+    state = {}
+    assert page_size(Namespace(page_size=4), state) == 4
+    assert page_size(Namespace(page_size=None), state) == 4
+
+
+def test_page_size_defaults_to_the_premium_limit():
+    assert page_size(Namespace(page_size=None), {}) == 8
+
+
+def test_a_partial_run_remembers_what_it_created():
+    state = {}
+    remember_result(
+        state,
+        {
+            "watchlists": [{"feed": "primary", "id": 1}, {"feed": "boats", "id": 2}],
+            "layout": {"id": "abc"},
+            "panes": [{"symbol": "NASDAQ:AAA", "line_id": "l1"}],
+        },
+    )
+    assert state["watchlist_id"] == 1
+    assert state["feeds"]["boats"]["watchlist_id"] == 2
+    assert state["layout_id"] == "abc"
+    assert state["lines"] == {"NASDAQ:AAA": "l1"}
+
+
+def notes_block(tmp_path, ticker_state=None, feeds=None, feed_state=None):
     position = one_position(tmp_path)
-    state = {"watchlist_id": 7, "layouts": {"T212 Positions": "abc"}, "lines": ticker_state or {}}
-    plan = build_plan([position], {"USAAA": "NASDAQ:AAA"}, state)
+    state = {"watchlist_id": 7, "layout_id": "abc", "lines": ticker_state or {}, "feeds": feed_state or {}}
+    plan = build_plan([position], {"USAAA": "NASDAQ:AAA"}, state, feeds=feeds)
     return render([position], plan, state, [], ["a.csv"], "2026-01-01 00:00 UTC", "passed")
 
 
 def test_notes_record_assets_and_artefacts(tmp_path):
     block = notes_block(tmp_path, {"NASDAQ:AAA": "line1"})
     for expected in ("https://www.tradingview.com/chart/abc/", "t212-positions", "NASDAQ:AAA", "line1", "100 USD"):
+        assert expected in block
+
+
+def test_notes_record_pages_and_feeds(tmp_path):
+    feeds = [{"name": "perp", "watchlist": {"name": "t212-perps", "id": 5}, "symbols": {}, "extras": []}]
+    feed_state = {"perp": {"watchlist_id": 5, "rows": {"AAA": {"symbol": None, "status": "missing"}}}}
+    block = notes_block(tmp_path, feeds=feeds, feed_state=feed_state)
+    for expected in ("1 page(s) of 8", "Feed `perp`", "t212-perps", "missing AAA", "reference price only"):
         assert expected in block
 
 

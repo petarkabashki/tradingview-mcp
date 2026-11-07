@@ -233,6 +233,11 @@ export async function newTab({ layout, name } = {}) {
         return title(hit);
       })()
     `;
+    // A tab that was just opened renders its layout list a moment later.
+    for (let i = 0; i < 20; i++) {
+      if (await evalIn(`document.querySelectorAll('.layout-list-item').length`)) break;
+      await new Promise(r => setTimeout(r, 250));
+    }
     let foundTitle = await evalIn(clickByTitle);
     if (!foundTitle) {
       // Not in the recents — expand the full layout list and retry.

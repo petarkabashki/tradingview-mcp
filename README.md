@@ -176,7 +176,7 @@ tv indicator add/remove/toggle/set/get
 tv layout list/switch/current/save
 tv pane list/layout/focus/symbol
 tv tab list/new/close/switch
-tv portfolio apply/verify
+tv portfolio apply/page/verify
 tv replay start/step/stop/status/autoplay/trade
 tv stream quote/bars/values/lines/labels/tables/all
 tv ui click/keyboard/hover/scroll/find/eval/type/panel/fullscreen/mouse
@@ -218,7 +218,7 @@ Claude reads [`CLAUDE.md`](CLAUDE.md) automatically when working in this project
 | "Draw a level at 24500" | `draw_shape` (horizontal_line) |
 | "Take a screenshot" | `capture_screenshot` |
 
-## Tool Reference (91 MCP tools)
+## Tool Reference (92 MCP tools)
 
 ### Chart Reading
 
@@ -286,7 +286,8 @@ Read `line.new()`, `label.new()`, `table.new()`, `box.new()` output from any vis
 
 | Tool | What it does |
 |------|-------------|
-| `portfolio_apply` | Sync a plan's watchlist, layouts and entry lines |
+| `portfolio_apply` | Sync a plan's watchlists, paged layout and entry lines |
+| `portfolio_page` | Flip the layout to a page or feed, drawing any missing lines |
 | `portfolio_verify` | Compare TradingView with a plan, without writing |
 
 `portfolio/` is a [uv](https://docs.astral.sh/uv/) project that turns Trading 212 CSV exports into such a plan and keeps markdown notes on what it manages:
@@ -294,10 +295,13 @@ Read `line.new()`, `label.new()`, `table.new()`, `box.new()` output from any vis
 ```bash
 uv run --project portfolio t212-tv --ingest <folder> positions      # open positions and entry prices
 uv run --project portfolio t212-tv --ingest <folder> sync           # update TradingView and the notes
+uv run --project portfolio t212-tv --ingest <folder> page next      # flip the layout to the next page
+uv run --project portfolio t212-tv --ingest <folder> page --feed boats  # same positions, overnight prices
+uv run --project portfolio t212-tv --ingest <folder> feed check     # test each feed's symbols against the listing
 uv run --project portfolio t212-tv --ingest <folder> verify --reload
 ```
 
-Each position gets a chart with a thick green dashed line at its entry price. Layouts page at `--max-charts`, which defaults to the 8 charts per tab of the Premium plan. The `t212-portfolio-sync` skill in `skills/` has the full workflow. Keep your exports out of git; `ingest/` is ignored.
+All positions share one layout, in pages of `--page-size` charts: 8 by default, the Premium limit, or 4. Each has a thick green dashed line at its entry price. Feeds show the same positions from another provider, such as BOATS overnight or crypto perpetuals, to follow prices outside US hours. The `t212-portfolio-sync` skill in `skills/` has the full workflow. Keep your exports out of git; `ingest/` is ignored.
 
 ### Pine Script Development
 
@@ -381,7 +385,7 @@ npm test
 Claude Code  ←→  MCP Server (stdio)  ←→  CDP (port 9222)  ←→  TradingView Desktop (Electron)
 ```
 
-- **Transport**: MCP over stdio (91 tools) + CLI (`tv` command, 31 commands with 73 subcommands)
+- **Transport**: MCP over stdio (92 tools) + CLI (`tv` command, 31 commands with 74 subcommands)
 - **Connection**: Chrome DevTools Protocol on localhost:9222
 - **Streaming**: Poll-and-diff loop with deduplication, JSONL output to stdout
 - **No dependencies** beyond `@modelcontextprotocol/sdk` and `chrome-remote-interface`
