@@ -2,11 +2,29 @@ import { register } from '../router.js';
 import * as core from '../../core/watchlist.js';
 
 register('watchlist', {
-  description: 'Watchlist tools (get, add, add-bulk, remove)',
+  description: 'Watchlist tools (get, list, create, switch, add, add-bulk, remove)',
   subcommands: new Map([
     ['get', {
       description: 'Get watchlist symbols',
       handler: () => core.get(),
+    }],
+    ['list', {
+      description: 'List all custom watchlists with their symbols',
+      handler: () => core.listAll(),
+    }],
+    ['create', {
+      description: 'Create a watchlist from symbols',
+      handler: (opts, positionals) => {
+        if (!positionals[0]) throw new Error('Name required. Usage: tv watchlist create my-list NASDAQ:AAPL NASDAQ:MSFT');
+        return core.create({ name: positionals[0], symbols: positionals.slice(1) });
+      },
+    }],
+    ['switch', {
+      description: 'Make a watchlist active',
+      handler: (opts, positionals) => {
+        if (!positionals[0]) throw new Error('Name required. Usage: tv watchlist switch my-list');
+        return core.switchList({ name: positionals.join(' ') });
+      },
     }],
     ['add', {
       description: 'Add a symbol to the watchlist',

@@ -12,5 +12,6 @@ export * as replay from './replay.js';
 export * as alerts from './alerts.js';
 export * as batch from './batch.js';
 export * as watchlist from './watchlist.js';
+export * as portfolio from './portfolio.js';
 export * as indicators from './indicators.js';
 export * as ui from './ui.js';

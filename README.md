@@ -171,11 +171,12 @@ tv data lines/labels/tables/boxes/strategy/trades/equity/depth/indicator
 tv pine get/set/compile/analyze/check/save/new/open/list/errors/console
 tv draw shape/list/get/remove/clear
 tv alert list/create/delete
-tv watchlist get/add
+tv watchlist get/add/list/create/switch
 tv indicator add/remove/toggle/set/get
-tv layout list/switch
+tv layout list/switch/current/save
 tv pane list/layout/focus/symbol
 tv tab list/new/close/switch
+tv portfolio apply/page/verify
 tv replay start/step/stop/status/autoplay/trade
 tv stream quote/bars/values/lines/labels/tables/all
 tv ui click/keyboard/hover/scroll/find/eval/type/panel/fullscreen/mouse
@@ -217,7 +218,7 @@ Claude reads [`CLAUDE.md`](CLAUDE.md) automatically when working in this project
 | "Draw a level at 24500" | `draw_shape` (horizontal_line) |
 | "Take a screenshot" | `capture_screenshot` |
 
-## Tool Reference (78 MCP tools)
+## Tool Reference (92 MCP tools)
 
 ### Chart Reading
 
@@ -270,6 +271,37 @@ Read `line.new()`, `label.new()`, `table.new()`, `box.new()` output from any vis
 | `tab_list` | List open chart tabs |
 | `tab_new` / `tab_close` | Open/close tabs |
 | `tab_switch` | Switch to a tab by index |
+
+### Watchlists and Layouts
+
+| Tool | What it does |
+|------|-------------|
+| `watchlist_list` | List all watchlists with ids and symbols |
+| `watchlist_create` | Create a watchlist |
+| `watchlist_switch` | Make a watchlist active in this tab |
+| `layout_current` | Id and name of the attached layout |
+| `layout_save` | Save the attached layout |
+
+### Portfolio Sync
+
+| Tool | What it does |
+|------|-------------|
+| `portfolio_apply` | Sync a plan's watchlists, paged layout and entry lines |
+| `portfolio_page` | Flip the layout to a page or feed, drawing any missing lines |
+| `portfolio_verify` | Compare TradingView with a plan, without writing |
+
+`portfolio/` is a [uv](https://docs.astral.sh/uv/) project that turns Trading 212 CSV exports into such a plan and keeps markdown notes on what it manages:
+
+```bash
+uv run --project portfolio t212-tv --ingest <folder> positions      # open positions and entry prices
+uv run --project portfolio t212-tv --ingest <folder> sync           # update TradingView and the notes
+uv run --project portfolio t212-tv --ingest <folder> page next      # flip the layout to the next page
+uv run --project portfolio t212-tv --ingest <folder> page --feed boats  # same positions, overnight prices
+uv run --project portfolio t212-tv --ingest <folder> feed check     # test each feed's symbols against the listing
+uv run --project portfolio t212-tv --ingest <folder> verify --reload
+```
+
+All positions share one layout, in pages of `--page-size` charts: 8 by default, the Premium limit, or 4. Each has a thick green dashed line at its entry price. A private Pine indicator on each pane draws it, so any held symbol picked in that pane shows its line too. Feeds show the same positions from another provider, such as BOATS overnight or crypto perpetuals, to follow prices outside US hours. The `t212-portfolio-sync` skill in `skills/` has the full workflow. Keep your exports out of git; `ingest/` is ignored.
 
 ### Pine Script Development
 
@@ -353,7 +385,7 @@ npm test
 Claude Code  ←→  MCP Server (stdio)  ←→  CDP (port 9222)  ←→  TradingView Desktop (Electron)
 ```
 
-- **Transport**: MCP over stdio (84 tools) + CLI (`tv` command, 30 commands with 66 subcommands)
+- **Transport**: MCP over stdio (92 tools) + CLI (`tv` command, 31 commands with 74 subcommands)
 - **Connection**: Chrome DevTools Protocol on localhost:9222
 - **Streaming**: Poll-and-diff loop with deduplication, JSONL output to stdout
 - **No dependencies** beyond `@modelcontextprotocol/sdk` and `chrome-remote-interface`

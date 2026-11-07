@@ -29,6 +29,16 @@ export function registerUiTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
+  server.tool('layout_current', 'Show the name and id of the layout open in the attached tab', {}, async () => {
+    try { return jsonResult(await core.layoutCurrent()); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
+  server.tool('layout_save', 'Save the layout open in the attached tab', {}, async () => {
+    try { return jsonResult(await core.layoutSave()); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
   server.tool('layout_switch', 'Switch to a saved chart layout by name or ID', {
     name: z.string().describe('Name or ID of the layout to switch to'),
   }, async ({ name }) => {

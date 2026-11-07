@@ -8,6 +8,26 @@ export function registerWatchlistTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
+  server.tool('watchlist_list', 'List all custom TradingView watchlists with their ids and symbols', {}, async () => {
+    try { return jsonResult(await core.listAll()); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
+  server.tool('watchlist_create', 'Create a new TradingView watchlist. Fails if the name is already taken.', {
+    name: z.string().describe('Name of the new watchlist'),
+    symbols: z.array(z.string()).optional().describe('Full symbols to include (e.g., ["NASDAQ:AAPL", "NYSE:COHR"])'),
+  }, async ({ name, symbols }) => {
+    try { return jsonResult(await core.create({ name, symbols })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
+  server.tool('watchlist_switch', 'Make a TradingView watchlist the active one', {
+    name: z.string().describe('Exact name of the watchlist'),
+  }, async ({ name }) => {
+    try { return jsonResult(await core.switchList({ name })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
   server.tool('watchlist_add', 'Add a symbol to the TradingView watchlist', {
     symbol: z.string().describe('Symbol to add (e.g., AAPL, BTCUSD, ES1!, NYMEX:CL1!)'),
   }, async ({ symbol }) => {

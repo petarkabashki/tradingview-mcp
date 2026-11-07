@@ -5,7 +5,7 @@
  * mirroring the proven alerts REST pattern. Add drives the Add-symbol
  * search UI so bare tickers resolve the same way they do for a human.
  */
-import { evaluate, evaluateAsync, getClient } from '../connection.js';
+import { evaluate, evaluateAsync, getClient, safeString } from '../connection.js';
 
 // TV renamed the right-rail button: current builds use data-name="base" with
 // aria-label "Watchlist, details, and news"; older builds used
@@ -235,4 +235,135 @@ export async function remove({ symbols }) {
     verified: stillPresent.length === 0,
     list_id: listInfo.id, list_name: listInfo.name, api: 'rest',
   };
+}
+
+const SYMBOLS_LIST_API = 'https://www.tradingview.com/api/v1/symbols_list';
+
+// Page-context REST call: the browser attaches the session cookies, so paths
+// are fixed by each caller and no credentials ever leave the page.
+async function symbolsListRequest(path, { method = 'GET', body } = {}) {
+  const url = safeString(`${SYMBOLS_LIST_API}/${path}`);
+  const headers = body === undefined
+    ? `{ 'X-Requested-With': 'XMLHttpRequest' }`
+    : `{ 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }`;
+  const bodyPart = body === undefined ? '' : `, body: ${safeString(JSON.stringify(body))}`;
+  const resp = await evaluateAsync(`
+    fetch(${url}, { method: ${safeString(method)}, credentials: 'include', headers: ${headers}${bodyPart} })
+      .then(function(r) { return r.text().then(function(t) { return { status: r.status, ok: r.ok, body: t }; }); })
+      .catch(function(e) { return { status: 0, ok: false, body: String(e) }; })
+  `);
+  if (!resp?.ok) {
+    throw new Error(`symbols_list ${method} ${path} failed (HTTP ${resp?.status}): ${(resp?.body || '').slice(0, 300)}`);
+  }
+  try { return JSON.parse(resp.body); }
+  catch { return null; }
+}
+
+/** All custom watchlists on the account, with their symbols. */
+export async function listAll() {
+  const lists = await symbolsListRequest('custom/');
+  const items = (Array.isArray(lists) ? lists : []).map(l => ({
+    id: l.id,
+    name: l.name,
+    count: (l.symbols || []).length,
+    symbols: l.symbols || [],
+  }));
+  return { success: true, count: items.length, lists: items };
+}
+
+/** Create a custom watchlist. Refuses a duplicate name rather than adding to it. */
+export async function create({ name, symbols = [] }) {
+  if (!name || !name.trim()) throw new Error('Watchlist name required');
+  const { lists } = await listAll();
+  if (lists.some(l => l.name === name)) {
+    throw new Error(`Watchlist "${name}" already exists; it was left unchanged.`);
+  }
+  await symbolsListRequest('custom/', { method: 'POST', body: { name, symbols } });
+
+  const made = (await listAll()).lists.find(l => l.name === name);
+  if (!made) throw new Error(`Watchlist "${name}" was not found after creating it.`);
+  const missing = symbols.filter(s => !made.symbols.includes(s));
+  return { success: missing.length === 0, action: 'created', id: made.id, name, symbols: made.symbols, missing };
+}
+
+/**
+ * Make a list we own hold exactly `symbols`. The id and name must both match,
+ * so a recycled name can never rewrite a list the caller doesn't own.
+ */
+export async function sync({ id, name, symbols }) {
+  if (!Number.isSafeInteger(id)) throw new Error(`Watchlist id must be an integer, got: ${id}`);
+  const list = (await listAll()).lists.find(l => l.id === id);
+  if (!list) throw new Error(`Watchlist ${id} no longer exists.`);
+  if (list.name !== name) throw new Error(`Watchlist ${id} is named "${list.name}", expected "${name}".`);
+
+  const toAdd = symbols.filter(s => !list.symbols.includes(s));
+  const toRemove = list.symbols.filter(s => !symbols.includes(s));
+  if (toAdd.length) await symbolsListRequest(`custom/${id}/append/`, { method: 'POST', body: toAdd });
+  if (toRemove.length) await symbolsListRequest(`custom/${id}/remove/`, { method: 'POST', body: toRemove });
+
+  const after = (await listAll()).lists.find(l => l.id === id);
+  const missing = symbols.filter(s => !after?.symbols.includes(s));
+  const extra = (after?.symbols || []).filter(s => !symbols.includes(s));
+  return {
+    success: missing.length === 0 && extra.length === 0,
+    action: toAdd.length || toRemove.length ? 'updated' : 'unchanged',
+    id, name, added: toAdd, removed: toRemove, missing, extra,
+  };
+}
+
+/** Make `name` the active list in the attached tab, through the list picker. */
+export async function switchList({ name }) {
+  await ensureWatchlistOpen();
+  const before = await getActiveListInfo();
+  if (before?.name === name) return { success: true, action: 'already_active', name, list_id: before.id };
+
+  const opened = await evaluate(`
+    (function() {
+      var menu = document.querySelector('[data-name="watchlists-button"]');
+      if (!menu) return false;
+      menu.click();
+      return true;
+    })()
+  `);
+  if (!opened) throw new Error('Watchlist menu button not found');
+  await new Promise(r => setTimeout(r, 400));
+
+  const dialog = await evaluate(`
+    (function() {
+      var item = document.querySelector('[aria-label^="Open list"]');
+      if (!item) return false;
+      item.click();
+      return true;
+    })()
+  `);
+  if (!dialog) throw new Error('"Open list" menu item not found');
+  await new Promise(r => setTimeout(r, 800));
+
+  // Rows read as name + symbol count ("stonk-positions49"), so the remainder
+  // must be all digits: a bare prefix would also match longer list names.
+  const picked = await evaluate(`
+    (function() {
+      var want = ${safeString(name)};
+      var rows = document.querySelectorAll('[data-role="list-item"]');
+      for (var i = 0; i < rows.length; i++) {
+        var t = (rows[i].textContent || '').trim();
+        if (t.indexOf(want) === 0 && /^\\d*$/.test(t.slice(want.length))) { rows[i].click(); return true; }
+      }
+      return false;
+    })()
+  `);
+  if (!picked) {
+    const c = await getClient();
+    await c.Input.dispatchKeyEvent({ type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await c.Input.dispatchKeyEvent({ type: 'keyUp', key: 'Escape', code: 'Escape' });
+    throw new Error(`Watchlist "${name}" not found in the list picker.`);
+  }
+
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 300));
+    const info = await getActiveListInfo();
+    if (info?.name === name) return { success: true, action: 'switched', name, list_id: info.id, previous: before?.name ?? null };
+  }
+  return { success: false, action: 'not_verified', name, previous: before?.name ?? null };
 }

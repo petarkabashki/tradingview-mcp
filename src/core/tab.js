@@ -32,7 +32,54 @@ export async function list() {
       is_chart: /tradingview\.com\/chart/i.test(t.url),
     }));
 
-  return { success: true, tab_count: tabs.length, tabs };
+  return { success: true, tab_count: tabs.length, tabs, shell_tabs: await readShellTabs() };
+}
+
+/** Tabs as the tab bar shows them, which can differ from the CDP targets. */
+async function readShellTabs() {
+  try {
+    return await withShell((evalIn) => evalIn(`
+      Array.from(document.querySelectorAll('.tabs-container .tab')).map(function(t) {
+        return { title: (t.textContent || '').trim(), active: t.classList.contains('active') };
+      })
+    `));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Position of a layout's tab in the tab bar, or null unless exactly one matches.
+ * Shell titles read "AAPL▲ 190.10+1.2%/ Layout name". The match is on the whole
+ * name, so "Main" never finds "Main 2". Tab bar order differs from CDP target
+ * order, so an index cannot stand in for this.
+ */
+export function shellIndexForLayout(shellTitles, layoutName) {
+  if (!layoutName) return null;
+  const hits = shellTitles.flatMap((title, i) =>
+    title === layoutName || title.endsWith(`/ ${layoutName}`) ? [i] : []);
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/** Make a layout's tab the active one in the tab bar. Null if it cannot be identified. */
+async function activateShellTab(targetId) {
+  const layoutName = await withTarget(targetId, (evalIn) =>
+    evalIn(`(function() { try { return window.TradingViewApi.layoutName(); } catch (e) { return null; } })()`));
+
+  return withShell(async (evalIn) => {
+    const tabs = await evalIn(`
+      Array.from(document.querySelectorAll('.tabs-container .tab')).map(function(t) {
+        return { title: (t.textContent || '').trim(), active: t.classList.contains('active') };
+      })
+    `);
+    const index = shellIndexForLayout(tabs.map(t => t.title), layoutName);
+    if (index === null) return null;
+    if (tabs[index].active) return true;
+
+    await evalIn(`document.querySelectorAll('.tabs-container .tab')[${index}].click()`);
+    await new Promise(r => setTimeout(r, 400));
+    return evalIn(`document.querySelectorAll('.tabs-container .tab')[${index}].classList.contains('active')`);
+  });
 }
 
 /**
@@ -120,7 +167,11 @@ export async function newTab({ layout, name } = {}) {
       const before = await evalIn(`document.querySelectorAll('.tabs-container .tab').length`);
       const clicked = await evalIn(`
         (function() {
-          var btn = document.querySelector('[class*="create-new-tab"]');
+          // As with the close button, the wrapper can have no handler: the
+          // real clickable is the button inside it.
+          var btn = document.querySelector('[class*="create-new-tab"] button')
+            || document.querySelector('button[class*="create-new-tab"]')
+            || document.querySelector('[class*="create-new-tab"]');
           if (!btn) return false;
           btn.click();
           return true;
@@ -131,7 +182,13 @@ export async function newTab({ layout, name } = {}) {
       const after = await evalIn(`document.querySelectorAll('.tabs-container .tab').length`);
       return { before, after };
     });
-    landing = await findLandingTarget();
+    if (shellCounts.after <= shellCounts.before) {
+      throw new Error('Clicked the new-tab button but no tab opened.');
+    }
+    for (let i = 0; i < 12 && !landing; i++) {
+      landing = await findLandingTarget();
+      if (!landing) await new Promise(r => setTimeout(r, 500));
+    }
   }
 
   if (!layout) {
@@ -197,17 +254,24 @@ export async function newTab({ layout, name } = {}) {
     const clickByTitle = `
       (function() {
         var q = ${JSON.stringify(String(layout).toLowerCase())};
-        var items = document.querySelectorAll('.layout-list-item');
-        for (var i = 0; i < items.length; i++) {
-          var t = items[i].querySelector('.layout-list-item-title');
-          if (t && t.textContent.trim().toLowerCase().indexOf(q) !== -1) {
-            items[i].click();
-            return t.textContent.trim();
-          }
-        }
-        return null;
+        var items = Array.from(document.querySelectorAll('.layout-list-item'));
+        var title = function(item) {
+          var t = item.querySelector('.layout-list-item-title');
+          return t ? t.textContent.trim() : '';
+        };
+        // An exact title wins, so "Main" never opens "Main 2".
+        var hit = items.find(function(item) { return title(item).toLowerCase() === q; })
+          || items.find(function(item) { return title(item).toLowerCase().indexOf(q) !== -1; });
+        if (!hit) return null;
+        hit.click();
+        return title(hit);
       })()
     `;
+    // A tab that was just opened renders its layout list a moment later.
+    for (let i = 0; i < 20; i++) {
+      if (await evalIn(`document.querySelectorAll('.layout-list-item').length`)) break;
+      await new Promise(r => setTimeout(r, 250));
+    }
     let foundTitle = await evalIn(clickByTitle);
     if (!foundTitle) {
       // Not in the recents — expand the full layout list and retry.
@@ -311,6 +375,13 @@ export async function switchTab({ index }) {
     }
   }
 
+  // A hidden tab can report itself visible, so the check above may have skipped
+  // the click. Confirm the tab bar agrees: closeTab acts on the tab bar's choice.
+  const shellActive = target.is_chart ? await activateShellTab(target.id) : null;
+  if (shellActive === false) {
+    throw new Error(`Clicked the tab for chart ${target.chart_id} but the tab bar did not activate it.`);
+  }
+
   // Re-attach the cached CDP client so subsequent reads follow the switch.
   try {
     await reconnectTo(target.id);
@@ -318,5 +389,13 @@ export async function switchTab({ index }) {
     throw new Error(`Tab is visible but failed to re-attach CDP to it: ${e.message}`);
   }
 
-  return { success: true, action: 'switched', index: idx, tab_id: target.id, chart_id: target.chart_id, visually_switched: true };
+  return {
+    success: true,
+    action: 'switched',
+    index: idx,
+    tab_id: target.id,
+    chart_id: target.chart_id,
+    visually_switched: true,
+    shell_active: shellActive,
+  };
 }
